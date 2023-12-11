@@ -10,6 +10,7 @@ import traceback
 from pathlib import Path
 
 from packaging.version import parse as vparse
+from multiprocessing import Manager
 
 from lyrebird import application, log, project_builder, reporter, version
 from lyrebird.checker import LyrebirdCheckerServer
@@ -95,6 +96,8 @@ def main():
 
     custom_conf = {es[0]: es[1] for es in args.extra_string} if args.extra_string else None
     application._cm = ConfigManager(conf_path_list=args.config, custom_conf=custom_conf)
+
+    application.sync_manager = Manager()
 
     # init logger for main process
     application._cm.config['verbose'] = args.verbose

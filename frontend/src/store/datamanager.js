@@ -5,9 +5,8 @@ import { bus } from '@/eventbus'
 export default {
   state: {
     title: 'Mock Data',
-    searchStr: '',
-    groupList: [],
-    jsonPath: null,
+    treeSearchStr: '',
+    treeData: [],
     conflictInfo: null,
     isLoadConflictInfo: false,
     groupListOpenNode: [],
@@ -35,26 +34,28 @@ export default {
     isLabelDisplay: true,
     isDisplayConfiguration: false,
     isLoadTreeAsync: false,
-    isReloadTreeWhenUpdate: false,
     undisplayedKey: ['children', 'type', 'parent_id', 'abs_parent_path', 'parent', 'link'],
     undeletableKey: ['id', 'rule', 'name', 'label', 'category', 'super_by'],
     uneditableKey: ['id', 'rule', 'super_by'],
     stickyTopKey: ['id', 'rule', 'super_id', 'name', 'label', 'super_by'],
     displayCopyKey: ['id'],
-    treeUndeletableId: []
+    treeUndeletableId: [],
+    temporaryMockDataList: [],
+    tempGroupId: 'tmp_group',
+    focusedLeaf: {}
   },
   mutations: {
     setTitle (state, title) {
       state.title = title
     },
-    setSearchStr (state, searchStr) {
-      state.searchStr = searchStr
+    setTreeSearchStr (state, treeSearchStr) {
+      state.treeSearchStr = treeSearchStr
     },
-    setGroupList (state, groupList) {
-      state.groupList = groupList
+    setTreeData (state, treeData) {
+      state.treeData = treeData
     },
-    setJsonPath (state, jsonPath) {
-      state.jsonPath = jsonPath
+    setFocusedLeaf (state, focusedLeaf) {
+      state.focusedLeaf = focusedLeaf
     },
     setConflictInfo (state, conflictInfo) {
       state.conflictInfo = conflictInfo
@@ -163,9 +164,6 @@ export default {
     setUndisplayedKey (state, undisplayedKey) {
       state.undisplayedKey = undisplayedKey
     },
-    setIsReloadTreeWhenUpdate (state, isReloadTreeWhenUpdate) {
-      state.isReloadTreeWhenUpdate = isReloadTreeWhenUpdate
-    },
     concatUndisplayedKey (state, undisplayedKey) {
       state.undisplayedKey = state.undisplayedKey.concat(undisplayedKey)
     },
@@ -189,9 +187,46 @@ export default {
     },
     concatTreeUndeletableId (state, treeUndeletableId) {
       state.treeUndeletableId = state.treeUndeletableId.concat(treeUndeletableId)
-    }
+    },
+    setTemporaryMockDataList (state, val) {
+      state.temporaryMockDataList = val
+    },
   },
   actions: {
+    saveTreeView ({ }, payload) { 
+      api.saveTreeView(payload)
+        .then(response => {
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Save treeview failed: ' + error.data.message)
+        })
+    },
+    getTreeView ({ commit }) { 
+      api.getTreeView()
+        .then(response => {
+          commit('setTreeData', response.data.data)
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Get treeview failed: ' + error.data.message)
+        })
+    },
+    saveTreeViewOpenNodes ({ }, payload) { 
+      api.saveTreeViewOpenNodes(payload)
+        .then(response => {
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Save treeview openNodes failed: ' + error.data.message)
+        })
+    },
+    getTreeViewOpenNodes ({ commit }) { 
+      api.getTreeViewOpenNodes()
+        .then(response => {
+          commit('setGroupListOpenNode', response.data.data)
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Get treeview openNodes failed: ' + error.data.message)
+        })
+    },
     loadDataMap ({ state, commit }) {
       return new Promise((resolve, reject) => {
         setTimeout(() => {
@@ -200,18 +235,18 @@ export default {
           if (state.isLoadTreeAsync) {
             api.getGroupMap({labels: state.dataListSelectedLabel})
               .then(response => {
-                commit('setGroupList', [response.data.data])
+                commit('setTreeData', [response.data.data])
                 commit('concatTreeUndeletableId', response.data.data.id)
 
                 api.getGroupChildren(response.data.data.id)
                   .then(r => {
-                    state.groupList[0].children = []
-                    state.groupList[0].children.push(...r.data.data)
+                    state.treeData[0].children = []
+                    state.treeData[0].children.push(...r.data.data)
                     commit('addGroupListOpenNode', response.data.data.id)
                     commit('setIsLoading', false)
                   })
                   .catch(error => {
-                    bus.$emit('msg.error', 'Load group ' + state.groupList[0].name + ' children error: ' + error)
+                    bus.$emit('msg.error', 'Load group ' + state.treeData[0].name + ' children error: ' + error)
                     commit('setIsLoading', false)
                   })
 
@@ -225,7 +260,7 @@ export default {
             api.getGroupMap({labels: state.dataListSelectedLabel})
               .then(response => {
                 commit('addGroupListOpenNode', response.data.data.id)
-                commit('setGroupList', [response.data.data])
+                commit('setTreeData', [response.data.data])
                 commit('concatTreeUndeletableId', response.data.data.id)
                 commit('setIsLoading', false)
               })
@@ -259,11 +294,8 @@ export default {
     saveDataDetail ({ state, commit, dispatch }, payload) {
       api.updateData(payload)
         .then(response => {
+          state.focusedLeaf.name = payload.name
           dispatch('loadDataDetail', payload)
-          if (state.isReloadTreeWhenUpdate) {
-            dispatch('loadDataMap')
-            commit('setIsReloadTreeWhenUpdate', false)
-          }
           bus.$emit('msg.success', 'Data ' + payload.name + ' update!')
         })
         .catch(error => {
@@ -274,7 +306,7 @@ export default {
       if (groupName) {
         api.createGroup(groupName, parentId)
           .then(response => {
-            dispatch('loadDataMap')
+            dispatch('getTreeView')
             bus.$emit('msg.success', 'Group ' + groupName + ' created!')
           })
           .catch(error => {
@@ -288,21 +320,29 @@ export default {
       bus.$emit('msg.loading', 'Updating group ' + payload.name + ' ...')
       api.updateGroup(payload.id, payload)
         .then(response => {
-          if (state.isReloadTreeWhenUpdate) {
-            dispatch('loadDataMap')
-            dispatch('loadDataLabel')
-            commit('setIsReloadTreeWhenUpdate', false)
-          }
+          state.focusedLeaf.name = payload.name
+          commit('setFocusNodeInfo', response.data.message)
           dispatch('loadGroupDetail', payload)
-          bus.$emit('msg.destroy')
-          if (response.data.message) {
-            bus.$emit('msg.info', response.data.message)
-          } else {
-            bus.$emit('msg.success', 'Group ' + payload.name + ' update!')
-          }
+          bus.$emit('msg.success', 'Group ' + payload.name + ' update!')
         })
         .catch(error => {
           bus.$emit('msg.error', 'Group ' + payload.name + ' update error: ' + error.data.message)
+        })
+    },
+    sendGroupDetail ({ state }, payload) {
+      bus.$emit('msg.loading', `Sending ${payload.tab} ...`)
+      let ids = state.isSelectableStatus ? state.selectedLeaf : [state.groupDetail.id]
+      api.updateByQuery(ids, state.groupDetail, payload.tab)
+        .then(response => {
+          bus.$emit('msg.destroy')
+          if (response.data.message && response.data.message.length > 0) {
+            bus.$emit('msg.info', response.data.message)
+          } else {
+            bus.$emit('msg.success', `Group ${payload.tab} send success!`)
+          }
+        })
+        .catch(error => {
+          bus.$emit('msg.error', `Group ${payload.tab} send error: ${error.data.message}`)
         })
     },
     deleteGroup ({ state, commit, dispatch }, payload) {
@@ -402,31 +442,45 @@ export default {
           bus.$emit('msg.error', payload.type + ' ' + payload.name + ' copy error: ' + error.data.message)
         })
     },
-    pasteGroupOrData ({ commit, dispatch }, payload) {
+    pasteGroupOrData ({ state, commit, dispatch }, payload) {
       bus.$emit('msg.loading', `Pasting ${payload.type} ${payload.name} ...`)
       api.pasteGroupOrData(payload.id)
         .then(response => {
           commit('addGroupListOpenNode', payload.id)
-          dispatch('loadDataMap')
-          bus.$emit('msg.destroy')
-          bus.$emit('msg.success', payload.type + ' ' + payload.name + ' paste success')
+          api.getGroupChildren(payload.id)
+            .then(response => {
+              state.focusedLeaf.children = response.data.data
+              commit('addGroupListOpenNode', payload.id)
+            })
+            .catch(error => {
+              bus.$emit('msg.error', 'Load group ' + payload.name + ' children error: ' + error.data.message)
+            })
+            .finally(() => { 
+              bus.$emit('msg.destroy')
+              bus.$emit('msg.success', payload.type + ' ' + payload.name + ' paste success')
+            })
         })
         .catch(error => {
           bus.$emit('msg.error', payload.type + ' ' + payload.name + ' paste error: ' + error.data.message)
         })
     },
-    duplicateGroupOrData ({ commit, dispatch }, payload) {
-      bus.$emit('msg.loading', 'Duplicating group ' + payload.name + ' ...')
-      api.duplicateGroupOrData(payload.id)
+    duplicateGroupOrData ({ state, commit, dispatch }, payload) {
+      bus.$emit('msg.loading', 'Duplicating group ' + payload.data.name + ' ...')
+      api.duplicateGroupOrData(payload.data.id)
         .then(response => {
-          commit('addGroupListOpenNode', payload.parent_id)
-          commit('addGroupListOpenNode', response.data.id)
-          dispatch('loadDataMap')
+          api.getGroupChildren(payload.data.parent_id)
+            .then(_response => {
+              payload.targetTreeNode.children = _response.data.data
+              commit('addGroupListOpenNode', payload.data.parent_id)
+            })
+            .catch(error => {
+              bus.$emit('msg.error', 'Load group ' + payload.data.name + ' children error: ' + error.data)
+            })
           bus.$emit('msg.destroy')
           bus.$emit('msg.info', response.data.message)
         })
         .catch(error => {
-          bus.$emit('msg.error', payload.type + ' ' + payload.name + ' duplicate error: ' + error.data.message)
+          bus.$emit('msg.error', payload.data.type + ' ' + payload.data.name + ' duplicate error: ' + error.data.message)
         })
     },
     importSnapshot ({ state, commit, dispatch }, snapshotId) {
@@ -451,10 +505,12 @@ export default {
           bus.$emit('msg.error', 'Load snapshot information error: ' + err.data.message)
         })
     },
-    deleteByQuery ({ state, commit }, payload) {
+    deleteByQuery ({ state, commit, dispatch }, payload) {
       bus.$emit('msg.loading', 'Deleting ' + payload.length + ' items ...')
       api.deleteByQuery(payload)
         .then(_ => {
+          dispatch('getTreeView')
+          dispatch('getTreeViewOpenNodes')
           commit('setFocusNodeInfo', {})
           commit('setDeleteNode', [])
           commit('setSelectedNode', new Set())
@@ -466,6 +522,36 @@ export default {
         })
         .catch(error => {
           bus.$emit('msg.error', 'Delete error: ' + error.data.message)
+        })
+    },
+    // Temp mock
+    loadTempMockData ({ state, commit }) {
+      api.getGroupDetail(state.tempGroupId)
+        .then(response => {
+          commit('setTemporaryMockDataList', [response.data.data])
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Load Temporary mock data error: ' + error.data.message)
+        })
+    },
+    createTempMockData ({ state, dispatch }, payload ) {
+      api.createData(state.tempGroupId, payload)
+        .then(_ => {
+          dispatch('loadTempMockData')
+          bus.$emit('msg.success', 'Save temporary mock data success!')
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Save temporary mock error: ' + error.data.message)
+        })
+    },
+    deleteTempMockData ({ state, dispatch }, payload) {
+      api.deleteByQuery([payload.id], state.tempGroupId)
+        .then(_ => {
+          dispatch('loadTempMockData')
+          bus.$emit('msg.success', `Delete temporary mock data ${payload.name} success!`)
+        })
+        .catch(error => {
+          bus.$emit('msg.error', 'Delete temporary mock data error: ' + error.data.message)
         })
     }
   }

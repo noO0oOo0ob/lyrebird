@@ -1,11 +1,13 @@
 import logging
+from lyrebird import application
 from .base_server import ProcessServer
-from multiprocessing import Queue, Lock
+from multiprocessing import Lock
 from logging.handlers import TimedRotatingFileHandler
 from colorama import Fore, Style, Back
 from collections import namedtuple
 from pathlib import Path
 import os
+
 DEFAULT_LOG_PATH = '~/.lyrebird/lyrebird.log'
 LOGGER_INITED = False
 
@@ -105,7 +107,7 @@ class LogServer(ProcessServer):
 
     def __init__(self):
         super().__init__()
-        self.queue = Queue()
+        self.queue = application.sync_manager.Queue()
         self.log_process_lock = Lock()
     
     def __new__(cls, *args, **kwargs):

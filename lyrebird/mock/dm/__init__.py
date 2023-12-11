@@ -13,6 +13,7 @@ from lyrebird.log import get_logger
 from lyrebird.application import config
 from lyrebird.mock import context
 from lyrebird.mock.dm.match import MatchRules
+from lyrebird.mock.dm.temp_mock import TempMock
 from lyrebird.config import CONFIG_TREE_SHOW_CONFIG
 
 PROP_FILE_NAME = '.lyrebird_prop'
@@ -30,8 +31,7 @@ class DataManager:
         self.is_activated_data_rules_contains_request_data = False
         self.LEVEL_SUPER_ACTIVATED = 3
         self.clipboard = None
-        self.save_to_group_id = None
-        self.tmp_group = {'id': 'tmp_group', 'type': 'group', 'name': 'tmp-group', 'label': [], 'children': []}
+
         self.snapshot_import_cache = {}
         self.SNAPSHOT_SUFFIX = '.lb'
         self.COPY_NODE_NAME_SUFFIX = ' - copy'
@@ -49,6 +49,12 @@ class DataManager:
 
         self.DELETE_STEP = 100
         self.is_deleting_lock = False
+
+        # init temp mock
+        self.temp_mock_tree = TempMock()
+
+        self.tree = []
+        self.open_nodes = []
 
     @property
     def snapshot_workspace(self):
@@ -89,7 +95,7 @@ class DataManager:
         children = self._adapter._get_group_children(group_id)
         parent_node = self.id_map.get(group_id)
         if not parent_node:
-            raise IDNotFound(group_id)
+            logger.error('IDNotFound, id=' + group_id)
         self.handle_group_config(children, parent_node['id'])
 
         for child in children:
@@ -392,6 +398,22 @@ class DataManager:
                     id_list.extend(self._collect_data_in_node(child))
         return id_list
 
+    def _collect_node(self, node, target_type=None):
+        id_list = []
+        if self.is_data_virtual_node(node):
+            return []
+
+        node_type = node.get('type')
+        if not target_type or node_type in target_type:
+            id_list.append(node['id'])
+
+        if node_type == 'group':
+            if 'children' in node:
+                for child in node['children']:
+                    id_list.extend(self._collect_node(child, target_type=target_type))
+
+        return id_list
+
     def deactivate(self):
         """
         Clear activated data
@@ -407,6 +429,21 @@ class DataManager:
     def reactive(self):
         for _group_id in self.activated_group:
             self.activate(_group_id)
+
+    def get_matched_data_multiple_source(self, flow):
+        matched_data = self.temp_mock_tree.get_matched_data(flow)
+        if matched_data:
+            return {
+                'data': matched_data,
+                'parent': self.temp_mock_tree.root
+            }
+
+        matched_data = self.get_matched_data(flow)
+        if matched_data:
+            return {
+                'data': matched_data,
+                'parent': list(self.activated_group.values())[0]
+            }
 
     def get_matched_data(self, flow):
         """
@@ -510,7 +547,7 @@ class DataManager:
             _data_name = data['name'] if data.get('name') else self._adapter._get_data_name(data)
             _data_rule = data['rule'] if data.get('rule') else self._adapter._get_data_rule(data['request'])
             if 'data' in data['request']:
-                data['request']['data'] = self._flow_data_2_str(data['request']['data'])
+                data['request']['data'] = utils.flow_data_2_str(data['request']['data'])
         else:
             _data_name = data.get('name')
             _data_rule = {'request.url': '(?=.*YOUR-REQUEST-PATH)(?=.*PARAMS)'}
@@ -521,7 +558,7 @@ class DataManager:
             data['response'] = dict(raw_data['response'])
 
             if 'data' in data['response']:
-                data['response']['data'] = self._flow_data_2_str(data['response']['data'])
+                data['response']['data'] = utils.flow_data_2_str(data['response']['data'])
         else:
             data['response'] = {}
 
@@ -555,14 +592,11 @@ class DataManager:
             raise UnsupportedType
 
         parent_node = None
-        if parent_id == 'tmp_group':
-            parent_node = self.tmp_group
-        elif parent_id:
-            parent_node = self.id_map.get(parent_id)
-            if not parent_node:
-                raise IDNotFound(parent_id)
-            if parent_node['type'] != 'group':
-                raise OnlyGroupCanContainAnyOtherObject
+        parent_node = self.id_map.get(parent_id)
+        if not parent_node:
+            raise IDNotFound(parent_id)
+        if parent_node['type'] != 'group':
+            raise OnlyGroupCanContainAnyOtherObject
 
         data = self._make_data(raw_data, **kwargs)
         data['parent_id'] = parent_id
@@ -588,19 +622,6 @@ class DataManager:
             self._adapter._add_group(data_node)
 
         return _data_id
-
-    def _flow_str_2_data(self, data_str):
-        if not isinstance(data_str, str):
-            return data_str
-        try:
-            return json.loads(data_str)
-        except Exception:
-            return data_str
-
-    def _flow_data_2_str(self, data):
-        if isinstance(data, str):
-            return data
-        return json.dumps(data, ensure_ascii=False)
 
     def add_group(self, data):
         ignore_key = self.add_group_ignore_keys | self.unsave_keys
@@ -632,6 +653,12 @@ class DataManager:
         self.id_map[group_id] = new_group
         # Save prop
         self._adapter._add_group(new_group)
+        # Update tree
+        if parent_node['id'] in self.open_nodes:
+            parent_children = self._get_group_children(parent_node['id'])
+            tree_target_node = self.get_target_node(self.tree, parent_node['id'])
+            if not tree_target_node:
+                tree_target_node['children'] = parent_children
         return group_id
 
     def add_group_by_path(self, path):
@@ -900,22 +927,22 @@ class DataManager:
     # -----
 
     def save_data(self, data):
-        if len(self.activated_group) > 0:
-            # TODO use self.save_to_group_id
-            target_group_id = list(self.activated_group.keys())[0]
-            self.add_data(target_group_id, data)
-        else:
-            self.add_data('tmp_group', data)
+        if len(self.activated_group) == 0:
+            raise ActivateGroupNotFound
+
+        target_group_id = list(self.activated_group.keys())[0]
+        self.add_data(target_group_id, data)
 
     # -----
     # Editor
     # -----
 
-    def update_group(self, _id, data, save=True):
+    def update_group(self, _id, data, save=True, **kwargs):
         node = self.id_map.get(_id)
         if not node:
             raise IDNotFound(_id)
 
+        old_name = node['name'] if node['name'] != data['name'] else ''
         # Remove unsave_key add by DataManager itself
         for key in self.unsave_keys:
             data.pop(key) if key in data else None
@@ -930,7 +957,7 @@ class DataManager:
         elif 'label' in data and isinstance(data['label'], list):
             data['label'].sort(key=lambda x:x.get('name', '').lower())
 
-        message = self._adapter._update_group(data) if save else None
+        message = self._adapter._update_group(data, **kwargs) if save else None
 
         # Update node
         # 1. Add new key into node
@@ -938,16 +965,53 @@ class DataManager:
         node.update(update_data)
 
         # 2. Remove deleted key in node
-        delete_keys = [k for k in node if k not in data and k not in self.update_group_ignore_keys]
+        delete_keys = [k for k in node if k not in data and k not in self.update_group_ignore_keys and k not in self.unsave_keys]
         for key in delete_keys:
             node.pop(key)
 
         # 3. Update existed value
-        for key, value in data.items():
-            if key in node:
-                node[key] = value
+        # 3. Modify abs_parent_path、parent、children
+        if old_name:
+            self.update_node_when_name_changed(node, _id, data['name'], old_name)
+
+        # 4. Update tree
+        tree_target_node = self.get_target_node(self.tree, _id)
+        if tree_target_node:
+            tree_target_node.update(update_data)
+            for key in delete_keys:
+                tree_target_node.pop(key)
+            if old_name:
+                self.update_node_when_name_changed(tree_target_node, _id, data['name'], old_name)
+            if not message.get('message', None):
+                message['message'] = tree_target_node
 
         return message
+
+    def get_target_node(self, tree, id):
+        if not tree:
+            return
+        for node in tree:
+            if node['id'] not in self.open_nodes:
+                continue
+            if node['id'] == id:
+                return node
+            result = self.get_target_node(node.get('children', []), id)
+            if result is not None:
+                return result                
+
+    def update_node_when_name_changed(self, node, id, new_name, old_name):
+        abs_parent_path = node.get('abs_parent_path', '')
+        parts = abs_parent_path.rsplit(old_name, 1)
+        if len(parts) > 1:
+            abs_parent_path = new_name.join(parts)
+        node['abs_parent_path'] = abs_parent_path
+
+        for parent in node.get('parent', []):
+            if (parent['id'] == id):
+                parent['name'] = new_name
+        
+        for child in node.get('children', []):
+            self.update_node_when_name_changed(child, id, new_name, old_name)
 
     def update_data(self, _id, data):
         node = self.id_map.get(_id)
@@ -959,10 +1023,17 @@ class DataManager:
             self.add_data(node['parent_id'], data, data_id=data['id'])
             return
 
-        if 'name' in data:
+        tree_target_node = None
+        if 'name' in data and node['name'] != data['name']:
+            self.update_node_when_name_changed(node, _id, data['name'], node['name'])
+            tree_target_node = self.get_target_node(self.tree, _id)
+            if tree_target_node:
+                tree_target_node['name'] = data['name']
+                self.update_node_when_name_changed(tree_target_node, _id, data['name'], node['name'])
             node['name'] = data['name']
         self._adapter._update_data(data)
         self._adapter._update_group(node)
+        return tree_target_node or node
 
     # -----
     # Snapshot
@@ -1110,6 +1181,21 @@ class DataManager:
                 # Delete from ID mapping
                 self.id_map.pop(id_)
 
+            # Modify tree
+            for id_ in node_delete_group_ids:
+                if id_ in self.open_nodes:
+                    self.open_nodes.remove(id_)
+            
+            def delete_subtrees(tree, ids_to_delete):
+                new_tree = []
+                for node in tree:
+                    if node['id'] not in ids_to_delete:
+                        node['children'] = delete_subtrees(node.get('children', []), ids_to_delete)
+                        new_tree.append(node)
+                return new_tree
+
+            self.tree = delete_subtrees(self.tree, id_list)
+
             # Delete
             self._adapter._delete_group_by_query({'id': node_delete_group_ids})
             self._adapter._delete_data_by_query({'id': node_delete_data_ids})
@@ -1119,7 +1205,8 @@ class DataManager:
             'state': 'finish'
         })
 
-        context.emit('datamanagerUpdate')
+    def update_by_query(self, query, data):
+        return self.update_group(data.get('id'), data, query=query)
 
 
 # -----------------
@@ -1129,6 +1216,9 @@ class DataManager:
 class DumpPropError(Exception):
     pass
 
+
+class ActivateGroupNotFound(Exception):
+    pass
 
 
 class RootNotSet(Exception):

@@ -58,9 +58,9 @@
 
         <v-btn
           icon
-          @click="changeMenuStatus"
+          @click="changeMenuStatus(data, $event)"
           class="mr-1"
-          v-show="data.type !== 'config'"
+          v-show="isNodeEditable"
         >
           <v-icon
             size="12px" 
@@ -79,7 +79,7 @@
 import { getGroupChildren } from '@/api'
 
 export default {
-  props: ['data', 'selected'],
+  props: ['data', 'selected', 'editable', 'deletable'],
   data () {
     return {
       isMouseOver: false,
@@ -136,7 +136,10 @@ export default {
       return this.$store.state.dataManager.focusNodeInfo && this.data.id === this.$store.state.dataManager.focusNodeInfo.id
     },
     isNodeDeletable () {
-      return this.$store.state.dataManager.treeUndeletableId.indexOf(this.data.id) === -1
+      return this.deletable && this.$store.state.dataManager.treeUndeletableId.indexOf(this.data.id) === -1
+    },
+    isNodeEditable () {
+      return this.editable && this.data.type !== 'config'
     },
     isNodeOpen () {
       return this.$store.state.dataManager.groupListOpenNode.indexOf(this.data.id) > -1
@@ -171,18 +174,21 @@ export default {
       this.$store.commit('setDeleteDialogSource', 'single')
       this.$store.commit('setIsShownDeleteDialog', true)
     },
-    changeMenuStatus (e) {
+    changeMenuStatus (data, e) {
       e.preventDefault()
+      this.$store.commit('setFocusedLeaf', data)
       this.$store.commit('setIsShownNodeMenu', true)
       this.$store.commit('setShownNodeMenuPosition', {'x': e.clientX, 'y': e.clientY})
     },
     onToggleStatusChange () {
       if (this.isNodeOpen) {
         this.$store.commit('deleteGroupListOpenNode', this.data.id)
+        this.$store.dispatch('saveTreeViewOpenNodes', this.$store.state.dataManager.groupListOpenNode)
         return
       } 
       if (!this.isLoadTreeAsync) {
         this.$store.commit('addGroupListOpenNode', this.data.id)
+        this.$store.dispatch('saveTreeViewOpenNodes', this.$store.state.dataManager.groupListOpenNode)
         return
       }
       if (this.isLoading) {
@@ -195,12 +201,20 @@ export default {
           this.data.children = response.data.data
           this.isLoading = false
           this.$store.commit('addGroupListOpenNode', this.data.id)
+          this.$store.dispatch('saveTreeView', this.$store.state.dataManager.treeData)
+          this.$store.dispatch('saveTreeViewOpenNodes', this.$store.state.dataManager.groupListOpenNode)
         })
         .catch(error => {
           this.$bus.$emit('msg.error', 'Load group ' + this.data.name + ' children error: ' + error.data.message)
         })
     },
     onTreeNodeClick () {
+      if (!this.editable) {
+        return
+      }
+      this.$store.commit('setFocusedLeaf', this.data)
+      this.$store.dispatch('saveTreeViewOpenNodes', this.$store.state.dataManager.groupListOpenNode)
+      this.$store.dispatch('saveTreeView', this.$store.state.dataManager.treeData)
       this.$store.commit('setFocusNodeInfo', this.data)
       if (this.data.type === 'group') {
         this.$store.dispatch('loadGroupDetail', this.data)
@@ -279,10 +293,6 @@ export default {
 }
 .toggle-icon-status {
   transform:rotate(-90deg);
-  /* animation-name: loading-icon-rotate;
-  animation-duration: 800ms;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite; */
 }
 .loading-icon {
   animation-name: loading-icon-rotate;

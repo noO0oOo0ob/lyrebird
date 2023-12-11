@@ -3,12 +3,10 @@ Base threading server class
 """
 
 from threading import Thread
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Manager
 from lyrebird import application
 
-
-service_msg_queue = Queue()
-
+service_msg_queue = None
 
 class ProcessServer:
     def __init__(self):
@@ -52,6 +50,8 @@ class ProcessServer:
             return
 
         global service_msg_queue
+        if service_msg_queue is None:
+            service_msg_queue = application.sync_manager.Queue()
         config = application.config.raw()
         logger_queue = application.server['log'].queue
         self.server_process = Process(group=None, target=self.run,
@@ -105,6 +105,8 @@ class MultiProcessServerMessageDispatcher(ThreadServer):
 
     def run(self):
         global service_msg_queue
+        if service_msg_queue is None:
+            service_msg_queue = application.sync_manager.Queue()
         emit = application.server['mock'].socket_io.emit
         publish = application.server['event'].publish
 

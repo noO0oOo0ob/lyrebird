@@ -61,7 +61,12 @@ class LyrebirdDatabaseServer(ThreadServer):
         self.storage_queue = Queue()
 
         # subscribe all channel
-        application.server['event'].subscribe('any', self.event_receiver)
+        application.server['event'].subscribe({
+            'name': 'event_receiver',
+            'origin': self,
+            'channel': 'any',
+            'func': self.event_receiver
+        })
     
     def auto_alter_tables(self, engine):
         metadata = MetaData()

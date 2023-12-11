@@ -49,6 +49,18 @@ export const updateGroup = (id, data) => {
   })
 }
 
+export const updateByQuery = (ids, data, tab) => {
+  const query = {
+    id: ids,
+    tab
+  }
+  return axios({
+    url: '/api/group',
+    method: 'PUT',
+    data: { query, data }
+  })
+}
+
 export const getDataDetail = (dataId) => {
   return axios({
     url: '/api/data/' + dataId
@@ -164,14 +176,45 @@ export const getSnapShotDetail = (id) => {
   })
 }
 
-export const deleteByQuery = (ids) => {
+export const deleteByQuery = (ids, parentId) => {
   const query = {
-    id: ids
+    id: ids,
+    'parent_id': parentId
   }
   return axios({
     url: '/api/group',
     method: 'DELETE',
     data: { query }
+  })
+}
+
+export const saveTreeView = (tree) => { 
+  return axios({
+    url: '/api/tree',
+    method: 'POST',
+    data: { tree }
+  })
+}
+
+export const getTreeView = () => { 
+  return axios({
+    url: '/api/tree',
+    method: 'GET'
+  })
+}
+
+export const saveTreeViewOpenNodes = (openNodes) => { 
+  return axios({
+    url: '/api/tree/open-nodes',
+    method: 'POST',
+    data: { openNodes }
+  })
+}
+
+export const getTreeViewOpenNodes = () => { 
+  return axios({
+    url: '/api/tree/open-nodes',
+    method: 'GET'
   })
 }
 

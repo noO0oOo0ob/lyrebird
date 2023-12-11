@@ -15,6 +15,7 @@
       hoverable
 
       :open="groupListOpenNode"
+      item-key="id"
 
       style="padding-left:0px"
     >
@@ -23,7 +24,7 @@
           :options="{threshold: 0.5}"
           transition="fade-transition"
         >
-          <DocumentTreeNode :data="item" :selected="selected"/>
+          <DocumentTreeNode :data="item" :selected="selected" :editable="editable" :deletable="deletable"/>
         </v-lazy>
       </template>
     </v-treeview>
@@ -37,7 +38,16 @@ export default {
   components: {
     DocumentTreeNode
   },
-  props: ['treeData', 'searchStr'],
+  props: {
+    'treeData': Array,
+    'searchStr': String,
+    'editable': {
+      default: true
+    },
+    'deletable': {
+      default: true
+    }
+  },
   data() {
     return {
       searchRefreshDataListTimer: null,
@@ -136,6 +146,7 @@ export default {
     resetGroupListOpenNode (payload) {
       for (const node of this.$store.state.dataManager.groupListOpenNode) {
         this.$store.commit('deleteGroupListOpenNode', node.id)
+        this.$store.dispatch('saveTreeViewOpenNodes', this.$store.state.dataManager.groupListOpenNode)
       }
       for (const parent of payload.parent) {
         this.$store.commit('addGroupListOpenNode', parent.id)

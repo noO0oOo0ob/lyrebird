@@ -1,4 +1,3 @@
-from queue import Queue
 from lyrebird.base_server import ThreadServer
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +35,7 @@ class BackgroundTaskServer(ThreadServer):
     def __init__(self):
         super().__init__()
         self.tasks = []
-        self.cmds = Queue()
+        self.cmds = application.sync_manager.Queue()
         self.executor = ThreadPoolExecutor(thread_name_prefix='bg-')
 
     def run(self):

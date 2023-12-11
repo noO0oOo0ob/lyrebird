@@ -5,19 +5,85 @@ Worked as a backgrund thread
 Run events handler and background task worker
 """
 from queue import Queue
+from multiprocessing import Manager, Process, Queue
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 import inspect
 import uuid
 import time
 import copy
-from lyrebird.base_server import ThreadServer
+import types
+from lyrebird.base_server import ThreadServer, ProcessServer, service_msg_queue
 from lyrebird import application
 from lyrebird.mock import context
-from lyrebird.log import get_logger
+from lyrebird import log
+import copy
+import json
+import importlib
 
 
-logger = get_logger()
+logger = log.get_logger()
+
+
+application_white_map = {
+    'config',
+    '_cm'
+}
+
+
+context_white_map = {
+    'application.data_manager.activated_data',
+    'application.data_manager.activated_group'
+}
+
+
+class CheckerApplicationInfo(dict):
+
+    def __init__(self, data=None, white_map={}):
+        super().__init__()
+        for path in white_map:
+            value = self._get_value_from_path(data, path)
+            if value is not None:
+                self._set_value_to_path(path, value)
+
+    def _get_value_from_path(self, data, path):
+        keys = path.split('.')
+        value = data
+        for key in keys:
+            value = getattr(value, key)
+            if value is None:
+                return None
+        return value
+
+    def _set_value_to_path(self, path, value):
+        keys = path.split('.')
+        current_dict = self
+        for key in keys[:-1]:
+            if key not in current_dict:
+                current_dict[key] = CheckerApplicationInfo()
+            current_dict = current_dict[key]
+        current_dict[keys[-1]] = value
+
+    
+    def __getattr__(self, item):
+        value = self
+        for key in item.split('.'):
+            value = value.get(key)
+            if value is None:
+                break
+        return value
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    def __delattr__(self, item):
+        del self[item]
 
 
 class InvalidMessage(Exception):
@@ -35,21 +101,130 @@ class Event:
         self.message = message
 
 
-class EventServer(ThreadServer):
+def import_func_from_file(filepath, func_name):
+    spec = importlib.util.spec_from_file_location("module.name", filepath)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    func = getattr(module, func_name)
+    return func
 
+
+def get_func_from_obj(obj, method_name):
+    return getattr(obj, method_name)
+
+
+def get_callback_func(func_ori, func_name):
+    if isinstance(func_ori, str):
+        return import_func_from_file(func_ori, func_name)
+    elif isinstance(func_ori, object):
+        return get_func_from_obj(func_ori, func_name)
+    else:
+        logger.error(f'The source type of method {func_name} is invalid, exception method source: {func_ori}')
+
+
+class CustomExecuteServer(ProcessServer):
     def __init__(self):
         super().__init__()
-        self.event_queue = Queue()
+    
+    def start(self, process_queue=None, process_namespace=None, publish_queue=None):
+        if self.running:
+            return
+
+        global service_msg_queue
+        if service_msg_queue is None:
+            service_msg_queue = application.sync_manager.Queue()
+        config = application.config.raw()
+        logger_queue = application.server['log'].queue
+        self.server_process = Process(group=None, target=self.run,
+                                      args=[service_msg_queue, config, logger_queue, process_queue, process_namespace, publish_queue, self.args],
+                                      kwargs=self.kwargs,
+                                      daemon=True)
+        self.server_process.start()
+        self.running = True
+    
+    def run(self, msg_queue, config, log_queue, process_queue, process_namespace, publish_queue, *args, **kwargs):
+        def monkey_path_publish(self, channel, message, publish_queue = publish_queue, *args, **kwargs):
+            if channel == 'notice':
+                self.check_notice(message)
+            publish_queue.put((channel, message, args, kwargs))
+        def monkey_path_issue(self, title, message, publish_queue = publish_queue):
+            notice = {
+                "title": title,
+                "message": message
+            }
+            self.check_notice(notice)
+            # publish_queue.put(('notice', notice, (), {}))            
+        log.init(config, log_queue)
+        self.running = True
+        checker_event_server = EventServer(True)
+        checker_event_server.event_queue = msg_queue
+        checker_event_server.__class__.publish = monkey_path_publish
+        import lyrebird
+        from lyrebird import event
+        lyrebird.application = process_namespace.application
+        lyrebird.application.config = process_namespace.application._cm.config
+        lyrebird.context = process_namespace.context
+        lyrebird.application['server'] = CheckerApplicationInfo()
+        lyrebird.application.server['event'] = checker_event_server
+        event.__class__.publish = monkey_path_publish
+        event.__class__.issue = monkey_path_issue
+        # lyrebird.application.server['event'].event_queue = msg_queue
+
+        while self.running:
+            try:
+                func_ori, func_name, callback_args, callback_kwargs = process_queue.get()
+                # callback_args.append(process_namespace)
+                # a = process_queue.get()
+                # print(func_name)
+                callback_fn = get_callback_func(func_ori, func_name)
+                # logger.info(callback_fn)
+                # callback_fn, callback_args, callback_kwargs = execute_queue.get()
+                callback_fn(*callback_args, **callback_kwargs)
+            except Exception:
+                traceback.print_exc()
+
+
+class PublishServer(ThreadServer):
+    def __init__(self):
+        super().__init__()
+        self.publish_msg_queue = application.sync_manager.Queue()
+
+    def run(self):
+        while self.running:
+            try:
+                channel, message, args, kwargs = self.publish_msg_queue.get()
+                application.server['event'].publish(channel, message, *args, **kwargs)
+            except Exception:
+                traceback.print_exc()
+
+
+class EventServer(ThreadServer):
+
+    def __init__(self, no_start = False):
+        super().__init__()
+        
         self.state = {}
         self.pubsub_channels = {}
         # channel name is 'any'. Linstening on all channel
         self.any_channel = []
-        self.broadcast_executor = ThreadPoolExecutor(thread_name_prefix='event-broadcast-')
+        self.process_executor_queue = None
+        self.event_queue = None
+        self.broadcast_executor = None
+        self.process_executor = None
+        self.publish_server = None
+        if not no_start:
+            self.event_queue = application.sync_manager.Queue()
+            self.process_executor_queue = application.sync_manager.Queue()
+            self.broadcast_executor = ThreadPoolExecutor(thread_name_prefix='event-broadcast-')
+            self.process_executor = CustomExecuteServer()
+            self.publish_server = PublishServer()
 
-    def broadcast_handler(self, callback_fn, event, args, kwargs):
+    def broadcast_handler(self, func_info, event, args, kwargs, process_queue=None):
         """
 
         """
+        callback_fn = func_info.get('func')
+        is_process = func_info.get('process')
 
         # Check
         func_sig = inspect.signature(callback_fn)
@@ -72,7 +247,15 @@ class EventServer(ThreadServer):
             callback_kwargs['event_id'] = event.id
         # Execute callback function
         try:
-            callback_fn(*callback_args, **callback_kwargs)
+            if is_process and isinstance(callback_fn, types.FunctionType) and event.channel in ('flow', 'page', 'flow.request', 'urlscheme.page'):
+                process_queue.put((
+                    func_info.get('origin'),
+                    func_info.get('name'),
+                    callback_args,
+                    callback_kwargs
+                ))
+            else:
+                callback_fn(*callback_args, **callback_kwargs)
         except Exception:
             logger.error(f'Event callback function [{callback_fn.__name__}] error. {traceback.format_exc()}')
 
@@ -85,15 +268,26 @@ class EventServer(ThreadServer):
                 callback_fn_list = self.pubsub_channels.get(e.channel)
                 if callback_fn_list:
                     for callback_fn, args, kwargs in callback_fn_list:
-                        self.broadcast_executor.submit(self.broadcast_handler, callback_fn, e, args, kwargs)
+                        self.broadcast_executor.submit(self.broadcast_handler, callback_fn, e, args, kwargs, self.process_executor_queue)
                 for callback_fn, args, kwargs in self.any_channel:
                     self.broadcast_executor.submit(self.broadcast_handler, callback_fn, e, args, kwargs)
             except Exception:
                 # empty event
                 traceback.print_exc()
+    
+    def start(self, *args, **kwargs):
+        super().start(*args, **kwargs)
+        print('process_executor start')
+        self.publish_server.start()
+        self.process_namespace = application.sync_manager.Namespace()
+        self.process_namespace.application = CheckerApplicationInfo(application, application_white_map)
+        self.process_namespace.context = CheckerApplicationInfo(context, context_white_map)
+        self.process_namespace.queue = application.server['event'].event_queue
+        self.process_executor.start(self.process_executor_queue, self.process_namespace, self.publish_server.publish_msg_queue)
 
     def stop(self):
         super().stop()
+        self.process_executor.stop()
         self.publish('system', {'name': 'event.stop'})
 
     def _check_message_format(self, message):
@@ -168,7 +362,7 @@ class EventServer(ThreadServer):
 
         logger.debug(f'channel={channel} state={state}\nmessage:\n-----------\n{message}\n-----------\n')
 
-    def subscribe(self, channel, callback_fn, *args, **kwargs):
+    def subscribe(self, func_info, *args, **kwargs):
         """
         Subscribe channel with a callback function
         That function will be called when a new message was published into it's channel
@@ -176,25 +370,29 @@ class EventServer(ThreadServer):
         callback function kwargs:
             channel=None receive channel name
         """
+        channel = func_info['channel']
+        if 'process' not in func_info:
+            func_info['process'] = True
         if channel == 'any':
-            self.any_channel.append([callback_fn, args, kwargs])
+            self.any_channel.append([func_info, args, kwargs])
         else:
             callback_fn_list = self.pubsub_channels.setdefault(channel, [])
-            callback_fn_list.append([callback_fn, args, kwargs])
+            callback_fn_list.append([func_info, args, kwargs])
 
-    def unsubscribe(self, channel, target_callback_fn, *args, **kwargs):
+    def unsubscribe(self, target_func_info, *args, **kwargs):
         """
         Unsubscribe callback function from channel
         """
+        channel = target_func_info['channel']
         if channel == 'any':
-            for any_channel_fn, *_ in self.any_channel:
-                if target_callback_fn == any_channel_fn:
-                    self.any_channel.remove([target_callback_fn, *_])
+            for any_info, *_ in self.any_channel:
+                if target_func_info['func'] == any_info['func']:
+                    self.any_channel.remove([target_func_info, *_])
         else:
             callback_fn_list = self.pubsub_channels.get(channel)
-            for callback_fn, *_ in callback_fn_list:
-                if target_callback_fn == callback_fn:
-                    callback_fn_list.remove([target_callback_fn, *_])
+            for callback_fn_info, *_ in callback_fn_list:
+                if target_func_info['func'] == callback_fn_info['func']:
+                    callback_fn_list.remove([target_func_info, *_])
 
 
 class CustomEventReceiver:

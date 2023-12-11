@@ -7,6 +7,33 @@ from lyrebird.config import CONFIG_TREE_LOAD_CHILDREN_ASYNC
 
 logger = log.get_logger()
 
+'''
+1. new API
+2. origin API, response add new key {data: {'name': '...'}} -> {data: {'name': '...'}, 'custom': [ {}, {} ]}
+3. origin API response, frontend store add new prop
+4. origin API response store, add DataDeteilFolder.vue computed prop
+5. origin API response store DataDeteilFolder.vue, add DataDetailInfo.vue type
+
+'''
+
+
+class TreeView(Resource):
+    def get(self):
+        return application.make_ok_response(data=context.application.data_manager.tree)
+
+    def post(self):
+        data = request.json.get('tree')
+        context.application.data_manager.tree = data
+        return context.make_ok_response()
+
+class OpenNodes(Resource):
+    def get(self):
+        return application.make_ok_response(data=context.application.data_manager.open_nodes)
+    
+    def post(self):
+        data = request.json.get('openNodes')
+        context.application.data_manager.open_nodes = data
+        return context.make_ok_response()
 
 class MockGroup(Resource):
     """
@@ -15,6 +42,10 @@ class MockGroup(Resource):
 
     def get(self, group_id=None, label=None):
         if group_id:
+            if group_id == 'tmp_group':
+                _group = context.application.data_manager.temp_mock_tree.get()
+                return application.make_ok_response(data=_group)
+
             query = request.args
             if query and query.get('childrenOnly') == 'true':
                 children = context.application.data_manager._get_group_children(group_id) or []
@@ -49,6 +80,8 @@ class MockGroup(Resource):
         if application.config.get(CONFIG_TREE_LOAD_CHILDREN_ASYNC):
             # Although async, reload is needed
             data_map = context.application.data_manager.root_without_children()
+            context.application.data_manager.tree = [data_map]
+            context.application.data_manager.open_nodes = [data_map['id']]
             return application.make_ok_response(data=data_map)
 
         root = context.application.data_manager.root
@@ -65,9 +98,19 @@ class MockGroup(Resource):
         return context.make_ok_response(data={'group_id': group_id})
 
     def put(self):
-        group_id = request.json.get('id')
-        data = request.json.get('data')
-        message = context.application.data_manager.update_group(group_id, data)
+        if 'query' in request.json:
+            query = request.json['query']
+            if query is None:
+                return application.make_fail_response(f'Update query is None!')
+
+            data = request.json.get('data')
+            message = context.application.data_manager.update_by_query(query, data)
+
+        else:
+            group_id = request.json.get('id')
+            data = request.json.get('data')
+            message = context.application.data_manager.update_group(group_id, data)
+
         if message:
             return context.make_ok_response(**message)
         return context.make_ok_response()
@@ -80,6 +123,10 @@ class MockGroup(Resource):
         query = request.json.get('query')
         if query is None:
             return application.make_fail_response(f'Delete query is None!')
+
+        if query.get('parent_id') == 'tmp_group':
+            context.application.data_manager.temp_mock_tree.delete_by_query(query)
+            return context.make_ok_response()
 
         if context.application.data_manager.is_deleting_lock:
             return application.make_fail_response(f'Is deleting, no new delete')
@@ -114,6 +161,8 @@ class MockData(Resource):
         data = request.json
         # Import encoder for encoding the requested content
         application.encoders_decoders.encoder_handler(data)
+        if 'lyrebirdInternalFlow' in data:
+            del data['lyrebirdInternalFlow']
         context.application.data_manager.update_data(data_id, data)
         context.application.data_manager.reactive()
         return context.make_ok_response()
@@ -121,6 +170,11 @@ class MockData(Resource):
     def post(self):
         parent_id = request.json.get('parent_id')
         data = request.json.get('data')
+
+        if parent_id == 'tmp_group':
+            new_data_id = context.application.data_manager.temp_mock_tree.add_data(data)
+            return application.make_ok_response(data_id=new_data_id)
+
         new_data_id = context.application.data_manager.add_data(parent_id, data)
         return context.make_ok_response(data_id=new_data_id)
 

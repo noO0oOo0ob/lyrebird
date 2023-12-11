@@ -51,6 +51,7 @@ labels = None
 
 encoders_decoders = None
 
+sync_manager = {}
 
 def start_server_without_mock_and_log():
     for name in server:
@@ -165,7 +166,11 @@ def status_listener(event):
             webbrowser.open(f'http://localhost:{config["mock.port"]}')
 
 def process_status_listener():
-    server['event'].subscribe('system', status_listener)
+    server['event'].subscribe({
+        'name': 'status_listener',
+        'channel': 'system',
+        'func': status_listener
+    })
 
 
 def status_ready():
