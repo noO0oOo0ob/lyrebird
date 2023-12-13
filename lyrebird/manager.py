@@ -211,7 +211,7 @@ def run(args: argparse.Namespace):
 
     # int statistics reporter
     application.reporter = reporter.Reporter()
-    reporter.start()
+    application.reporter.start()
     # activate notice center
     application.notice = NoticeCenter()
 

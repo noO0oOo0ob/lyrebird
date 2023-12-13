@@ -146,14 +146,73 @@ class CustomExecuteServer(ProcessServer):
         def monkey_path_publish(self, channel, message, publish_queue = publish_queue, *args, **kwargs):
             if channel == 'notice':
                 self.check_notice(message)
-            publish_queue.put((channel, message, args, kwargs))
+            event_id = str(uuid.uuid4())
+
+            # Make sure event is dict
+            if not isinstance(message, dict):
+                # Plugins send a array list as message, then set this message to raw property
+                _msg = {'raw': message}
+                message = _msg
+            
+            message_value = message.get('message', 'No message')
+            if not isinstance(message_value, str):
+                raise InvalidMessage('Value of key "message" must be a string.')
+
+            message['channel'] = channel
+            message['id'] = event_id
+            message['timestamp'] = round(time.time(), 3)
+
+            # Add event sender
+            stack = inspect.stack()
+            script_path = stack[2].filename
+            script_name = script_path[script_path.rfind('/') + 1:]
+            function_name = stack[2].function
+            sender_dict = {
+                "file": script_name,
+                "function": function_name
+            }
+            message['sender'] = sender_dict
+
+            publish_queue.put((event_id, channel, message, args, kwargs))
+
         def monkey_path_issue(self, title, message, publish_queue = publish_queue):
             notice = {
                 "title": title,
                 "message": message
             }
             self.check_notice(notice)
-            # publish_queue.put(('notice', notice, (), {}))            
+
+            event_id = str(uuid.uuid4())
+            channel = 'notice'
+            message = notice
+
+            # Make sure event is dict
+            if not isinstance(message, dict):
+                # Plugins send a array list as message, then set this message to raw property
+                _msg = {'raw': message}
+                message = _msg
+            
+            message_value = message.get('message', 'No message')
+            if not isinstance(message_value, str):
+                raise InvalidMessage('Value of key "message" must be a string.')
+
+            message['channel'] = channel
+            message['id'] = event_id
+            message['timestamp'] = round(time.time(), 3)
+
+            # Add event sender
+            stack = inspect.stack()
+            script_path = stack[2].filename
+            script_name = script_path[script_path.rfind('/') + 1:]
+            function_name = stack[2].function
+            sender_dict = {
+                "file": script_name,
+                "function": function_name
+            }
+            message['sender'] = sender_dict
+            publish_queue.put((event_id, channel, message, args, kwargs))
+        import os
+        print(f'EventServer start on {os.getpid()}')      
         log.init(config, log_queue)
         self.running = True
         checker_event_server = EventServer(True)
@@ -173,12 +232,7 @@ class CustomExecuteServer(ProcessServer):
         while self.running:
             try:
                 func_ori, func_name, callback_args, callback_kwargs = process_queue.get()
-                # callback_args.append(process_namespace)
-                # a = process_queue.get()
-                # print(func_name)
                 callback_fn = get_callback_func(func_ori, func_name)
-                # logger.info(callback_fn)
-                # callback_fn, callback_args, callback_kwargs = execute_queue.get()
                 callback_fn(*callback_args, **callback_kwargs)
             except Exception:
                 traceback.print_exc()
@@ -192,8 +246,8 @@ class PublishServer(ThreadServer):
     def run(self):
         while self.running:
             try:
-                channel, message, args, kwargs = self.publish_msg_queue.get()
-                application.server['event'].publish(channel, message, *args, **kwargs)
+                event_id, channel, message, args, kwargs = self.publish_msg_queue.get()
+                application.server['event'].publish(channel, message, event_id=event_id, *args, **kwargs)
             except Exception:
                 traceback.print_exc()
 
@@ -301,7 +355,7 @@ class EventServer(ThreadServer):
         if not isinstance(message_value, str):
             raise InvalidMessage('Value of key "message" must be a string.')
 
-    def publish(self, channel, message, state=False, *args, **kwargs):
+    def publish(self, channel, message, state=False, event_id=None, *args, **kwargs):
         """
         publish message
 
@@ -314,33 +368,36 @@ class EventServer(ThreadServer):
         if state is true, message will be kept as state
 
         """
-        # Make event id
-        event_id = str(uuid.uuid4())
+        if not event_id:
+            # Make event id
+            event_id = str(uuid.uuid4())
 
-        # Make sure event is dict
-        if not isinstance(message, dict):
-            # Plugins send a array list as message, then set this message to raw property
-            _msg = {'raw': message}
-            message = _msg
-        
-        self._check_message_format(message)
+            # Make sure event is dict
+            if not isinstance(message, dict):
+                # Plugins send a array list as message, then set this message to raw property
+                _msg = {'raw': message}
+                message = _msg
+            
+            self._check_message_format(message)
 
-        message['channel'] = channel
-        message['id'] = event_id
-        message['timestamp'] = round(time.time(), 3)
+            message['channel'] = channel
+            message['id'] = event_id
+            message['timestamp'] = round(time.time(), 3)
 
-        # Add event sender
-        stack = inspect.stack()
-        script_path = stack[2].filename
-        script_name = script_path[script_path.rfind('/') + 1:]
-        function_name = stack[2].function
-        sender_dict = {
-            "file": script_name,
-            "function": function_name
-        }
-        message['sender'] = sender_dict
+            # Add event sender
+            stack = inspect.stack()
+            script_path = stack[2].filename
+            script_name = script_path[script_path.rfind('/') + 1:]
+            function_name = stack[2].function
+            sender_dict = {
+                "file": script_name,
+                "function": function_name
+            }
+            message['sender'] = sender_dict
 
-        self.event_queue.put(Event(event_id, channel, message))
+            self.event_queue.put(Event(event_id, channel, message))
+        else:
+            self.event_queue.put(Event(event_id, channel, message))
 
         # TODO Remove state and raw data
         if state:

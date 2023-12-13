@@ -10,7 +10,7 @@ from lyrebird.log import get_logger
 from lyrebird.mock.blueprints.apis.bandwidth import config
 from urllib.parse import urlparse, unquote
 from .http_data_helper import DataHelper
-from .http_header_helper import HeadersHelper
+from .http_header_helper import *
 from .proxy_handler import ProxyHandler
 
 
@@ -81,7 +81,7 @@ class HandlerContext:
         if raw_headers:
             headers = raw_headers
         else:
-            headers = HeadersHelper.origin2flow(self.request)
+            headers = headers_origin2flow(self.request)
 
         _request = dict(
             headers=headers,
@@ -183,7 +183,7 @@ class HandlerContext:
     def get_request_body(self, in_request_handler=True):
         if self.is_request_edited:
             # TODO Repeated calls, remove it
-            self.flow['request']['headers'] = HeadersHelper.flow2origin(self.flow['request'], chain=self.request_chain)
+            self.flow['request']['headers'] = headers_flow2origin(self.flow['request'], chain=self.request_chain)
 
             _data = DataHelper.flow2origin(self.flow['request'], chain=self.request_chain)
         else:
@@ -198,7 +198,7 @@ class HandlerContext:
 
     def get_request_headers(self):
         if self.is_request_edited:
-            self.flow['request']['headers'] = HeadersHelper.flow2origin(self.flow['request'], chain=self.request_chain)
+            self.flow['request']['headers'] = headers_flow2origin(self.flow['request'], chain=self.request_chain)
 
         headers = {}
         unproxy_headers = application.config.get('proxy.ignored_headers', {})
@@ -218,7 +218,7 @@ class HandlerContext:
 
     def get_response_generator(self):
         if self.is_response_edited:
-            self.flow['response']['headers'] = HeadersHelper.flow2origin(self.flow['response'], chain=self.response_chain)
+            self.flow['response']['headers'] = headers_flow2origin(self.flow['response'], chain=self.response_chain)
             _generator = self._generator_bytes()
         else:
             _generator = self._generator_stream()
@@ -271,7 +271,7 @@ class HandlerContext:
             'code': self.response.status_code,
             'timestamp': round(time.time(), 3)
         }
-        HeadersHelper.origin2flow(self.response, output=self.flow[output_key])
+        headers_origin2flow(self.response, output=self.flow[output_key])
 
     def update_response_data2flow(self, output_key='response'):
         DataHelper.origin2flow(self.response, output=self.flow[output_key], chain=self.response_chain)

@@ -88,6 +88,8 @@ class LyrebirdMockServer(ThreadServer):
             return application.make_fail_response(f'Mock server error:\n {trace}')
 
     def run(self):
+        import os
+        _logger.info(f'Core start on {os.getpid()}')
         server_ip = application.config.get('ip')
         _logger.log(60, f'Core start on http://{server_ip}:{self.port}')
         if not sys.stdin or not sys.stdin.isatty():

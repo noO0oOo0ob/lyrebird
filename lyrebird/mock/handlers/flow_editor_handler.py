@@ -1,8 +1,8 @@
 from lyrebird import application
-from .function_executor import FunctionExecutor
+from .function_executor import *
 
 
-class FlowEditorHandler(FunctionExecutor):
+class FlowEditorHandler():
 
     def __init__(self):
         self.on_request = application.on_request
@@ -11,7 +11,7 @@ class FlowEditorHandler(FunctionExecutor):
         self.on_response_upstream = application.on_response_upstream
 
     def on_request_handler(self, handler_context):
-        matched_funcs = FlowEditorHandler.get_matched_sorted_handler(self.on_request, handler_context.flow)
+        matched_funcs = get_matched_sorted_handler(self.on_request, handler_context.flow)
         if not matched_funcs:
             return
 
@@ -20,7 +20,7 @@ class FlowEditorHandler(FunctionExecutor):
         handler_context.flow['request']['headers']['lyrebird_modified'] = 'modified'
 
     def on_request_upstream_handler(self, handler_context):
-        matched_funcs = FlowEditorHandler.get_matched_sorted_handler(self.on_request_upstream, handler_context.flow)
+        matched_funcs = get_matched_sorted_handler(self.on_request_upstream, handler_context.flow)
         if not matched_funcs:
             return
 
@@ -29,7 +29,7 @@ class FlowEditorHandler(FunctionExecutor):
         handler_context.flow['request']['headers']['lyrebird_modified'] = 'modified'
 
     def on_response_upstream_handler(self, handler_context):
-        matched_funcs = FlowEditorHandler.get_matched_sorted_handler(self.on_response_upstream, handler_context.flow)
+        matched_funcs = get_matched_sorted_handler(self.on_response_upstream, handler_context.flow)
         if not matched_funcs:
             return
 
@@ -41,7 +41,7 @@ class FlowEditorHandler(FunctionExecutor):
         handler_context.flow['response']['headers']['lyrebird_modified'] = 'modified'
 
     def on_response_handler(self, handler_context):
-        matched_funcs = FlowEditorHandler.get_matched_sorted_handler(self.on_response, handler_context.flow)
+        matched_funcs = get_matched_sorted_handler(self.on_response, handler_context.flow)
         if not matched_funcs:
             return
 
@@ -63,5 +63,5 @@ class FlowEditorHandler(FunctionExecutor):
     @staticmethod
     def script_executor(func_list, flow):
         application.encoders_decoders.decoder_handler(flow)
-        FlowEditorHandler.func_handler(func_list, flow)
+        func_handler(func_list, flow)
         application.encoders_decoders.encoder_handler(flow)
