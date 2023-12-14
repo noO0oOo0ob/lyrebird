@@ -171,7 +171,8 @@ def run(args: argparse.Namespace):
 
     # show current config contents
     print_lyrebird_info()
-    config_str = json.dumps(application._cm.config, ensure_ascii=False, indent=4)
+    config_str = str(application._cm.config)
+    # config_str = json.dumps(application._cm.config, ensure_ascii=False, indent=4)
     logger.warning(f'Lyrebird start with config:\n{config_str}')
 
     # Main server

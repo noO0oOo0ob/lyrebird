@@ -44,7 +44,7 @@ class LyrebirdProxyServer(ProcessServer):
                     continue
                 else:
                     return True
-            except Exception:
+            except Exception as e:
                 continue
 
     def start_mitmdump(self, queue, config, logger, mitmdump_path):

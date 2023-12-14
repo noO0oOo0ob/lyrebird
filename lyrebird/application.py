@@ -90,7 +90,8 @@ class ConfigProxy:
         return _cm.config[k]
 
     def raw(self):
-        return _cm.config
+        return _cm.config.raw()
+        # return _cm.config
 
 
 config = ConfigProxy()

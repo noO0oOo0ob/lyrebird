@@ -52,7 +52,7 @@ class ProcessServer:
         global service_msg_queue
         if service_msg_queue is None:
             service_msg_queue = application.sync_manager.Queue()
-        config = application.config.raw()
+        config = application._cm.config
         logger_queue = application.server['log'].queue
         self.server_process = Process(group=None, target=self.run,
                                       args=[service_msg_queue, config, logger_queue, self.args],
