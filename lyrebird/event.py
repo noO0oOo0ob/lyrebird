@@ -7,83 +7,29 @@ Run events handler and background task worker
 from queue import Queue
 from multiprocessing import Manager, Process, Queue
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing.managers import Namespace
 import traceback
 import inspect
 import uuid
 import time
 import copy
 import types
-from lyrebird.base_server import ThreadServer, ProcessServer, service_msg_queue
+from lyrebird.base_server import ThreadServer, ProcessServer
+from lyrebird.base_server import prepare_application_for_monkey_patch, monkey_patch_application, monkey_patch_issue, monkey_patch_publish
 from lyrebird import application
 from lyrebird.mock import context
 from lyrebird import log
+import os
+import sys
 import copy
-import json
+import signal
 import importlib
-
+import functools
+import imp
+import setuptools
+from pathlib import Path
 
 logger = log.get_logger()
-
-
-application_white_map = {
-    'config',
-    '_cm'
-}
-
-
-context_white_map = {
-    'application.data_manager.activated_data',
-    'application.data_manager.activated_group'
-}
-
-
-class CheckerApplicationInfo(dict):
-
-    def __init__(self, data=None, white_map={}):
-        super().__init__()
-        for path in white_map:
-            value = self._get_value_from_path(data, path)
-            if value is not None:
-                self._set_value_to_path(path, value)
-
-    def _get_value_from_path(self, data, path):
-        keys = path.split('.')
-        value = data
-        for key in keys:
-            value = getattr(value, key)
-            if value is None:
-                return None
-        return value
-
-    def _set_value_to_path(self, path, value):
-        keys = path.split('.')
-        current_dict = self
-        for key in keys[:-1]:
-            if key not in current_dict:
-                current_dict[key] = CheckerApplicationInfo()
-            current_dict = current_dict[key]
-        current_dict[keys[-1]] = value
-
-    
-    def __getattr__(self, item):
-        value = self
-        for key in item.split('.'):
-            value = value.get(key)
-            if value is None:
-                break
-        return value
-
-    def __getstate__(self):
-        return self.__dict__
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-
-    def __setattr__(self, key, value):
-        self[key] = value
-
-    def __delattr__(self, item):
-        del self[item]
 
 
 class InvalidMessage(Exception):
@@ -101,12 +47,30 @@ class Event:
         self.message = message
 
 
+def import_func_module(path):
+    path = os.path.dirname(path)
+    packages = setuptools.find_packages(path)
+    for pkg in packages:
+        manifest_file = Path(path)/pkg/'manifest.py'
+        if not manifest_file.exists():
+            continue
+        if pkg in sys.modules:
+            continue
+        sys.path.append(str(Path(path)/pkg))
+        imp.load_package(pkg, Path(path)/pkg)
+
+
 def import_func_from_file(filepath, func_name):
-    spec = importlib.util.spec_from_file_location("module.name", filepath)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    func = getattr(module, func_name)
-    return func
+    name = os.path.basename(filepath)[:-3]
+    if name in sys.modules:
+        module = sys.modules[name]
+    else:
+        # 从文件加载模块
+        spec = importlib.util.spec_from_file_location(name, filepath)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return getattr(module, func_name)
 
 
 def get_func_from_obj(obj, method_name):
@@ -125,134 +89,75 @@ def get_callback_func(func_ori, func_name):
 class CustomExecuteServer(ProcessServer):
     def __init__(self):
         super().__init__()
+        self.event_thread_executor = None
     
-    def start(self, process_queue=None, process_namespace=None, publish_queue=None):
-        if self.running:
-            return
-
-        global service_msg_queue
-        if service_msg_queue is None:
-            service_msg_queue = application.sync_manager.Queue()
-        config = application.config.raw()
-        logger_queue = application.server['log'].queue
-        self.server_process = Process(group=None, target=self.run,
-                                      args=[service_msg_queue, config, logger_queue, process_queue, process_namespace, publish_queue, self.args],
-                                      kwargs=self.kwargs,
-                                      daemon=True)
-        self.server_process.start()
-        self.running = True
-    
-    def run(self, msg_queue, config, log_queue, process_queue, process_namespace, publish_queue, *args, **kwargs):
-        def monkey_path_publish(self, channel, message, publish_queue = publish_queue, *args, **kwargs):
-            if channel == 'notice':
-                self.check_notice(message)
-            event_id = str(uuid.uuid4())
-
-            # Make sure event is dict
-            if not isinstance(message, dict):
-                # Plugins send a array list as message, then set this message to raw property
-                _msg = {'raw': message}
-                message = _msg
-            
-            message_value = message.get('message', 'No message')
-            if not isinstance(message_value, str):
-                raise InvalidMessage('Value of key "message" must be a string.')
-
-            message['channel'] = channel
-            message['id'] = event_id
-            message['timestamp'] = round(time.time(), 3)
-
-            # Add event sender
-            stack = inspect.stack()
-            script_path = stack[2].filename
-            script_name = script_path[script_path.rfind('/') + 1:]
-            function_name = stack[2].function
-            sender_dict = {
-                "file": script_name,
-                "function": function_name
-            }
-            message['sender'] = sender_dict
-
-            publish_queue.put((event_id, channel, message, args, kwargs))
-
-        def monkey_path_issue(self, title, message, publish_queue = publish_queue):
-            notice = {
-                "title": title,
-                "message": message
-            }
-            self.check_notice(notice)
-
-            event_id = str(uuid.uuid4())
-            channel = 'notice'
-            message = notice
-
-            # Make sure event is dict
-            if not isinstance(message, dict):
-                # Plugins send a array list as message, then set this message to raw property
-                _msg = {'raw': message}
-                message = _msg
-            
-            message_value = message.get('message', 'No message')
-            if not isinstance(message_value, str):
-                raise InvalidMessage('Value of key "message" must be a string.')
-
-            message['channel'] = channel
-            message['id'] = event_id
-            message['timestamp'] = round(time.time(), 3)
-
-            # Add event sender
-            stack = inspect.stack()
-            script_path = stack[2].filename
-            script_name = script_path[script_path.rfind('/') + 1:]
-            function_name = stack[2].function
-            sender_dict = {
-                "file": script_name,
-                "function": function_name
-            }
-            message['sender'] = sender_dict
-            publish_queue.put((event_id, channel, message, args, kwargs))
+    def run(self, async_obj, config, *args, **kwargs):
         import os
-        print(f'EventServer start on {os.getpid()}')      
+        print(f'EventServer start on {os.getpid()}')
+
+        self.event_thread_executor = ThreadPoolExecutor()
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        for _, path in async_obj['plugins']:
+            import_func_module(path)
+
+        log_queue = async_obj['logger_queue']
+        process_queue = async_obj['process_queue']
+        publish_queue = async_obj['publish_queue']
+
+        # monkey_patch is performed on the context content of the process to ensure 
+        # that functions of Lyrebird can still be used in the process.
+
+        async_funcs = {}
+        async_funcs['publish'] = functools.partial(monkey_patch_publish, publish_queue=publish_queue)
+        async_funcs['issue'] = functools.partial(monkey_patch_issue, publish_queue=publish_queue)
+        monkey_patch_application(async_obj, async_funcs)
+
         log.init(config, log_queue)
         self.running = True
-        checker_event_server = EventServer(True)
-        checker_event_server.event_queue = msg_queue
-        checker_event_server.__class__.publish = monkey_path_publish
-        import lyrebird
-        from lyrebird import event
-        lyrebird.application = process_namespace.application
-        lyrebird.application.config = process_namespace.application._cm.config
-        lyrebird.context = process_namespace.context
-        lyrebird.application['server'] = CheckerApplicationInfo()
-        lyrebird.application.server['event'] = checker_event_server
-        event.__class__.publish = monkey_path_publish
-        event.__class__.issue = monkey_path_issue
-        # lyrebird.application.server['event'].event_queue = msg_queue
-
+        
         while self.running:
             try:
-                func_ori, func_name, callback_args, callback_kwargs = process_queue.get()
+                msg = process_queue.get()
+                if not msg:
+                    break
+                func_ori, func_name, callback_args, callback_kwargs = msg
                 callback_fn = get_callback_func(func_ori, func_name)
-                callback_fn(*callback_args, **callback_kwargs)
+                self.event_thread_executor.submit(callback_fn, *callback_args, **callback_kwargs)
+                # callback_fn(*callback_args, **callback_kwargs)
             except Exception:
                 traceback.print_exc()
+    
+    def start(self):
+        plugins = application.server['plugin'].plugins
+        plugins = [(p_name, plugin.location) for p_name, plugin in plugins.items()]
+        self.async_obj['plugins'] = plugins
+        super().start()
 
 
 class PublishServer(ThreadServer):
     def __init__(self):
         super().__init__()
-        self.publish_msg_queue = application.sync_manager.Queue()
+        # self.publish_msg_queue = application.sync_manager.get_queue()
+        self.publish_msg_queue = application.sync_manager.get_multiprocessing_queue()
+        # self.publish_msg_queue = Queue()
 
     def run(self):
         while self.running:
             try:
-                event_id, channel, message, args, kwargs = self.publish_msg_queue.get()
+                msg = self.publish_msg_queue.get()
+                if not msg:
+                    break
+                event_id, channel, message, args, kwargs = msg
                 application.server['event'].publish(channel, message, event_id=event_id, *args, **kwargs)
             except Exception:
                 traceback.print_exc()
 
 
 class EventServer(ThreadServer):
+
+    async_starting = False
 
     def __init__(self, no_start = False):
         super().__init__()
@@ -267,8 +172,10 @@ class EventServer(ThreadServer):
         self.process_executor = None
         self.publish_server = None
         if not no_start:
-            self.event_queue = application.sync_manager.Queue()
-            self.process_executor_queue = application.sync_manager.Queue()
+            self.process_executor_queue = application.sync_manager.get_multiprocessing_queue()
+            self.event_queue = application.sync_manager.get_queue()
+            # self.process_executor_queue = Queue()
+            # self.process_executor_queue = application.sync_manager.get_queue()
             self.broadcast_executor = ThreadPoolExecutor(thread_name_prefix='event-broadcast-')
             self.process_executor = CustomExecuteServer()
             self.publish_server = PublishServer()
@@ -301,7 +208,7 @@ class EventServer(ThreadServer):
             callback_kwargs['event_id'] = event.id
         # Execute callback function
         try:
-            if is_process and isinstance(callback_fn, types.FunctionType) and event.channel in ('flow', 'page', 'flow.request', 'urlscheme.page'):
+            if EventServer.async_starting and is_process and isinstance(callback_fn, types.FunctionType) and event.channel in ('flow', 'page', 'flow.request', 'urlscheme.page'):
                 process_queue.put((
                     func_info.get('origin'),
                     func_info.get('name'),
@@ -317,6 +224,8 @@ class EventServer(ThreadServer):
         while self.running:
             try:
                 e = self.event_queue.get()
+                if not e:
+                    break
                 # Deep copy event for async event system
                 e = copy.deepcopy(e)
                 callback_fn_list = self.pubsub_channels.get(e.channel)
@@ -329,22 +238,32 @@ class EventServer(ThreadServer):
                 # empty event
                 traceback.print_exc()
     
-    def start(self, *args, **kwargs):
-        super().start(*args, **kwargs)
-        print('process_executor start')
-        self.publish_server.start()
-        self.process_namespace = application.sync_manager.Namespace()
-        self.process_namespace.application = CheckerApplicationInfo(application, application_white_map)
-        self.process_namespace.context = CheckerApplicationInfo(context, context_white_map)
-        self.process_namespace.queue = application.server['event'].event_queue
-        self.process_executor.start(self.process_executor_queue, self.process_namespace, self.publish_server.publish_msg_queue)
+    def async_start(self):
+        if not self.publish_server.running:
+            self.publish_server.start()
+        self.process_namespace = prepare_application_for_monkey_patch()
+        self.process_executor.async_obj['process_queue'] = self.process_executor_queue
+        self.process_executor.async_obj['process_namespace'] = self.process_namespace
+        self.process_executor.async_obj['publish_queue'] = self.publish_server.publish_msg_queue
+        self.process_executor.async_obj['eventserver'] = EventServer
+        self.process_executor.start()
+        EventServer.async_starting = True
 
     def stop(self):
+        self.publish('system', {'name': 'event.stop'})
+        time.sleep(1)
         super().stop()
         self.process_executor.stop()
-        self.publish('system', {'name': 'event.stop'})
+        self.publish_server.stop()
+        
+    
+    def pre_stop(self):
+        super().pre_stop()
+        self.process_executor.pre_stop()
+        self.publish_server.pre_stop()
 
-    def _check_message_format(self, message):
+    @staticmethod
+    def _check_message_format(message):
         """
         Check if the message content is valid.
         Such as: 'message' value must be a string.
@@ -355,19 +274,8 @@ class EventServer(ThreadServer):
         if not isinstance(message_value, str):
             raise InvalidMessage('Value of key "message" must be a string.')
 
-    def publish(self, channel, message, state=False, event_id=None, *args, **kwargs):
-        """
-        publish message
-
-        if type of message is dict, set default event information:
-            - channel
-            - id
-            - timestamp
-            - sender: if was cantained in message, do not update
-
-        if state is true, message will be kept as state
-
-        """
+    @staticmethod
+    def get_publish_message(channel, message, event_id=None):
         if not event_id:
             # Make event id
             event_id = str(uuid.uuid4())
@@ -378,7 +286,7 @@ class EventServer(ThreadServer):
                 _msg = {'raw': message}
                 message = _msg
             
-            self._check_message_format(message)
+            EventServer._check_message_format(message)
 
             message['channel'] = channel
             message['id'] = event_id
@@ -393,11 +301,24 @@ class EventServer(ThreadServer):
                 "file": script_name,
                 "function": function_name
             }
-            message['sender'] = sender_dict
+            message['sender'] = sender_dict   
+        return (event_id, channel, message)
 
-            self.event_queue.put(Event(event_id, channel, message))
-        else:
-            self.event_queue.put(Event(event_id, channel, message))
+    def publish(self, channel, message, state=False, event_id=None, *args, **kwargs):
+        """
+        publish message
+
+        if type of message is dict, set default event information:
+            - channel
+            - id
+            - timestamp
+            - sender: if was cantained in message, do not update
+
+        if state is true, message will be kept as state
+
+        """
+        event_id, channel, message = EventServer.get_publish_message(channel, message, event_id)
+        self.event_queue.put(Event(event_id, channel, message))
 
         # TODO Remove state and raw data
         if state:

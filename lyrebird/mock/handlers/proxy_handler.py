@@ -28,7 +28,10 @@ class ProxyHandler:
 
         origin_url = request.get('url')
 
-        logger.info(f'<Proxy> {origin_url}')
+        if in_request_handler:
+            logger.info(f'<Proxy> {origin_url}')
+        else:
+            logger.info(f'<Proxy in Diff Mode> {origin_url}')
 
         if not origin_url:
             handler_context.is_proxiable = False

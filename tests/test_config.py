@@ -1,5 +1,8 @@
 import pytest
+import lyrebird
 from lyrebird import config, application, reporter
+from lyrebird.event import EventServer
+from lyrebird.log import LogServer
 from lyrebird.task import BackgroundTaskServer
 from pathlib import Path
 import json
@@ -20,12 +23,25 @@ conf = {
     }
 }
 
+class FakeSocketio:
+
+    def emit(self, event, *args, **kwargs): {
+        print(f'Send event {event} args={args} kw={kwargs}')
+    }
+
+
 @pytest.fixture
 def cm():
     cm = config.ConfigManager()
+    application._cm = cm
+    application.sync_manager = application.SyncManager()
     application.server['task'] = BackgroundTaskServer()
+    application.server['event'] = EventServer()
+    application.server['log'] = LogServer()
     application.reporter = reporter.Reporter()
-    reporter.start()
+    application.reporter.start()
+    lyrebird.mock.context.application = lyrebird.mock.context.Application()
+    lyrebird.mock.context.application.socket_io = FakeSocketio()
     yield cm
 
 

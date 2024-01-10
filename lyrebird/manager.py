@@ -10,7 +10,6 @@ import traceback
 from pathlib import Path
 
 from packaging.version import parse as vparse
-from multiprocessing import Manager
 
 from lyrebird import application, log, project_builder, reporter, version
 from lyrebird.checker import LyrebirdCheckerServer
@@ -25,13 +24,18 @@ from lyrebird.notice_center import NoticeCenter
 from lyrebird.plugins import PluginManager
 from lyrebird.mitm.proxy_server import LyrebirdProxyServer
 from lyrebird.task import BackgroundTaskServer
-from lyrebird.base_server import MultiProcessServerMessageDispatcher
+from lyrebird.base_server import MultiProcessServerMessageDispatcher, ProcessManager
 from lyrebird.log import LogServer
+from lyrebird.utils import RedisManager, SharedMemoryManager
+from lyrebird.compatibility import compat_check
 from lyrebird import utils
-
+import builtins
 
 logger = log.get_logger()
-
+ori_print = builtins.print
+def new_print(*args, **kwargs):
+    logger.info(' '.join(map(str, args)))
+    
 
 def main():
     """
@@ -88,6 +92,8 @@ def main():
 
     args = parser.parse_args()
 
+    compat_check()
+
     if args.version:
         print(version.LYREBIRD)
         return
@@ -97,7 +103,7 @@ def main():
     custom_conf = {es[0]: es[1] for es in args.extra_string} if args.extra_string else None
     application._cm = ConfigManager(conf_path_list=args.config, custom_conf=custom_conf)
 
-    application.sync_manager = Manager()
+    application.sync_manager = application.SyncManager()
 
     # init logger for main process
     application._cm.config['verbose'] = args.verbose
@@ -105,15 +111,16 @@ def main():
     application.server['log'] = LogServer()
     application.start_log_server()
     log.init(application._cm.config, application.server['log'].queue)
+    # builtins.print = new_print
 
     # Add exception hook
     def process_excepthook(exc_type, exc_value, tb):
-        logger.error(traceback.format_tb(tb))
+        print(traceback.format_tb(tb))
     sys.excepthook = process_excepthook
 
     def thread_excepthook(args):
-        logger.error(f'Thread except {args}')
-        logger.error("".join(traceback.format_tb(args[2])))
+        print(f'Thread except {args}')
+        print("".join(traceback.format_tb(args[2])))
     # add threading excepthook after python3.8
     if hasattr(threading, 'excepthook'):
         threading.excepthook = thread_excepthook
@@ -233,6 +240,8 @@ def run(args: argparse.Namespace):
     if args.script:
         application.server['checker'].load_scripts(args.script)
 
+    application.server['event'].async_start()
+
     # Start server without mock server, mock server must start after all blueprint is done
     application.start_mock_server()
 
@@ -244,10 +253,16 @@ def run(args: argparse.Namespace):
 
     # stop event handler
     def signal_handler(signum, frame):
-        reporter.stop()
+        logger.info("Lyrebird is preparing for close...")
+        ProcessManager.pre_stop()
+        application.sync_manager.broadcast_to_queues(None)
+        ProcessManager.destory()
         application.stop_server()
+        application.sync_manager.destory()
+        RedisManager.destory()
+        SharedMemoryManager.destory()
+        print('!!!Ctrl-C pressed. Lyrebird stop!!!')
         threading.Event().set()
-        logger.warning('!!!Ctrl-C pressed. Lyrebird stop!!!')
         os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)

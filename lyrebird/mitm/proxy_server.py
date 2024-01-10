@@ -106,6 +106,8 @@ class LyrebirdProxyServer(ProcessServer):
     def run(self, msg_queue, config, log_queue, *args, **kwargs):
         import os
         print(f'MitdumpServer start on {os.getpid()}')
+        # import signal
+        # signal.signal(signal.SIGINT, signal.SIG_IGN)
         # Init logger
         log.init(config, log_queue)
         logger = log.get_logger()

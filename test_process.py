@@ -1,8 +1,8 @@
-from multiprocessing import Pool, Queue, Manager
+from multiprocessing import Pool, Queue, Manager, Process
 from test_func import func
 import importlib
 import dill
-
+import time
 def testf():
     print(6666)
 
@@ -22,41 +22,37 @@ class MyClass:
     def my_method(self):
         print("Hello, World!")
 
+def run(queue):
+    print(123)
+    # print(queue)
+    while True:
+        print("===")
+        i = queue.get()
+        print(i)
+        time.sleep(1)
+
 
 if __name__ == '__main__':
     def func(self):
         print("123")
-    obj = MyClass(123)
-    obj.__class__.my_method = func
-    obj.my_method()
+    # obj = MyClass(123)
+    # obj.__class__.my_method = func
+    # obj.my_method()
     # pool = Pool(processes=4)
-    # manager = Manager()
-    # manager2 = Manager()
-    # print(manager == manager2)
-    # print(manager is manager2)
-    # print(manager._process.pid)
-    # print(manager2._process.pid)
+    manager = Manager()
 
-    # queue = manager.Queue()
-    # aa = import_func_from_file("/Users/sheng/workCode/lyrebird/test_func2.py", "func2")
-    # aa = MyClass(321)
-    # print(aa)
-    # try:
-    #     aa = dill.dumps(aa)
-    # except Exception as e:
-    #     print(e)
-    # # print(aa)
-    # # queue.put(123)
-    # for i in range(4):
-    #     queue.put(aa)
-    # print("start")
-    # for i in range(4):
-    #     pool.apply_async(func, args=(queue,))
-    # # for i in range(3):
-    # #     pool.map(func, range(4))
-    # print("end")
-    # pool.close()
-    # pool.join()
-    # for i in range(3):
-    #     pool.map(func, range(4))
+    queue = manager.Queue()
+    name = manager.Namespace()
+    for i in range(20):
+        queue.put(None)
+
+    p = Process(target=run, args=[queue,])
+    p.start()
+
+    time.sleep(5)
+
+    manager.shutdown()
+    p.terminate()
+    p.join()
+    print(111)
 

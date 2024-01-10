@@ -25,16 +25,17 @@ class CheckerEventHandler:
             "title": title,
             "message": message
         }
-        self.check_notice(notice)
+        self.__class__.check_notice(notice)
         application.server['event'].publish('notice', notice)
 
     def publish(self, channel, message, *args, **kwargs):
         from lyrebird import application
         if channel == 'notice':
-            self.check_notice(message)
+            self.__class__.check_notice(message)
         application.server['event'].publish(channel, message, *args, **kwargs)
     
-    def check_notice(self, notice):
+    @staticmethod
+    def check_notice(notice):
         from lyrebird import application
         stack = inspect.stack()
         script_path = stack[2].filename

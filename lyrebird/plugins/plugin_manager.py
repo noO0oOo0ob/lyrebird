@@ -83,7 +83,7 @@ class PluginManager(StaticServer):
                     'func': event_option[1],
                     'name': event_option[1].__name__,
                     'origin': event_option[1].__code__.co_filename,
-                    'process': False
+                    'process': event_option[2] if len(event_option)>2 and isinstance(event_option[2], bool) else False
                 }
                 event_service.subscribe(func_info)
 

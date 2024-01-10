@@ -40,6 +40,8 @@ class LyrebirdMockServer(ThreadServer):
         self.name = 'MockServer'
         self.conf = application.config
         # TODO rm conf rom mock context
+        if not context.application:
+            context.application = context.Application()
         context.application.conf = application.config
 
         self.debug = False
@@ -89,24 +91,25 @@ class LyrebirdMockServer(ThreadServer):
 
     def run(self):
         import os
-        _logger.info(f'Core start on {os.getpid()}')
-        server_ip = application.config.get('ip')
-        _logger.log(60, f'Core start on http://{server_ip}:{self.port}')
-        if not sys.stdin or not sys.stdin.isatty():
-            # For e2e testing start lyrebird in subprocess
-            self.socket_io.run(self.app, host='0.0.0.0', port=self.port, debug=self.debug,
-                               use_reloader=False, allow_unsafe_werkzeug=True)
-        else:
-            self.socket_io.run(self.app, host='0.0.0.0', port=self.port, debug=self.debug, use_reloader=False)
+        while self.running:
+            _logger.info(f'Core start on {os.getpid()}')
+            server_ip = application.config.get('ip')
+            _logger.log(60, f'Core start on http://{server_ip}:{self.port}')
+            if not sys.stdin or not sys.stdin.isatty():
+                # For e2e testing start lyrebird in subprocess
+                self.socket_io.run(self.app, host='0.0.0.0', port=self.port, debug=self.debug,
+                                use_reloader=False, allow_unsafe_werkzeug=True)
+            else:
+                self.socket_io.run(self.app, host='0.0.0.0', port=self.port, debug=self.debug, use_reloader=False)
 
     def stop(self):
         """
         停止服务
 
         """
-        super().stop()
         try:
             self.socket_io.stop()
         except Exception:
             pass
+        # super().stop()
         _logger.warning('CoreServer shutdown')

@@ -8,8 +8,9 @@ import datetime
 from lyrebird.base_server import ProcessServer, service_msg_queue
 from lyrebird import application
 from lyrebird.mock import context
-from multiprocessing import Process
-from lyrebird.event import CheckerApplicationInfo, context_white_map, application_white_map
+from multiprocessing import Process, Queue
+from lyrebird.base_server import CheckerApplicationInfo, context_white_map, application_white_map
+from lyrebird.base_server import prepare_application_for_monkey_patch, monkey_patch_application, monkey_patch_issue, monkey_patch_publish
 
 
 logger = get_logger()
@@ -20,7 +21,9 @@ class Reporter(ProcessServer):
         super().__init__()
         self.scripts = []
         self.workspace = application.config.get('reporter.workspace')
-        self.report_queue = application.sync_manager.Queue()
+        # self.report_queue = Queue()
+        # self.report_queue = application.sync_manager.get_queue()
+        self.report_queue = application.sync_manager.get_multiprocessing_queue()
         if not self.workspace:
             logger.debug(f'reporter.workspace not set.')
         else:
@@ -56,32 +59,22 @@ class Reporter(ProcessServer):
             self.scripts.append(_script_module.report)
     
     def start(self):
-        if self.running:
-            return
+        self.process_namespace = prepare_application_for_monkey_patch()
+        self.async_obj['report_queue'] = self.report_queue
+        self.async_obj['workspace'] = self.workspace
+        self.async_obj['process_namespace'] = self.process_namespace
+        super().start()
 
-        global service_msg_queue
-        if service_msg_queue is None:
-            service_msg_queue = application.sync_manager.Queue()
-        config = application.config.raw()
-        logger_queue = application.server['log'].queue
-        self.process_namespace = application.sync_manager.Namespace()
-        self.process_namespace.application = CheckerApplicationInfo(application, application_white_map)
-        self.process_namespace.context = CheckerApplicationInfo(context, context_white_map)
-        self.process_namespace.queue = application.server['event'].event_queue
-        self.server_process = Process(group=None, target=self.run,
-                                      args=[service_msg_queue, config, logger_queue, self.report_queue, self.workspace, self.process_namespace, ()],
-                                      kwargs={},
-                                      daemon=True)
-        self.server_process.start()
-        # self.running = True
-
-    def run(self, msg_queue, config, log_queue, reportor_queue, workspace, process_namespace, *args, **kwargs):
+    def run(self, async_obj, config, *args, **kwargs):
         import os
         print(f'ReportServer start on {os.getpid()}')
-        import lyrebird
-        lyrebird.application = process_namespace.application
-        lyrebird.application.config = process_namespace.application._cm.config
-        lyrebird.context = process_namespace.context
+        import signal
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        workspace = async_obj['workspace']
+        reportor_queue = async_obj['report_queue']
+
+        monkey_patch_application(async_obj)
         target_dir = Path(workspace)
         scripts = []
         if not target_dir.exists():
@@ -112,6 +105,8 @@ class Reporter(ProcessServer):
         while True:
             try:
                 data = reportor_queue.get()
+                if not data:
+                    break
                 new_data = deepcopy(data)
                 for script in scripts:
                     try:
@@ -135,36 +130,26 @@ class Reporter(ProcessServer):
         # task_manager.add_task('send-report', send_report)
 
 
-last_page = None
-last_page_in_time = None
-lyrebird_start_time = None
-
-
 def _page_out():
-    global last_page
-    global last_page_in_time
 
-    if last_page and last_page_in_time:
-        duration = (datetime.datetime.now() - last_page_in_time).total_seconds()
+    if hasattr(application.sync_namespace,'last_page') and hasattr(application.sync_namespace,'last_page_in_time'):
+        duration = (datetime.datetime.now() - application.sync_namespace.last_page_in_time).total_seconds()
         application.server['event'].publish('system', {
             'system': {
-                'action': 'page.out', 'page': last_page, 'duration': duration
+                'action': 'page.out', 'page': application.sync_namespace.last_page, 'duration': duration
             }
         })
 
         # TODO remove below
         application.reporter.report({
             'action': 'page.out',
-            'page': last_page,
+            'page': application.sync_namespace.last_page,
             'duration': duration
         })
 
 
 def page_in(name):
     _page_out()
-
-    global last_page
-    global last_page_in_time
 
     application.server['event'].publish('system', {
         'system': {'action': 'page.in', 'page': name}
@@ -176,13 +161,12 @@ def page_in(name):
         'page': name
     })
 
-    last_page = name
-    last_page_in_time = datetime.datetime.now()
+    application.sync_namespace.last_page = name
+    application.sync_namespace.last_page_in_time = datetime.datetime.now()
 
 
 def start():
-    global lyrebird_start_time
-    lyrebird_start_time = datetime.datetime.now()
+    application.sync_namespace.lyrebird_start_time = datetime.datetime.now()
     application.server['event'].publish('system', {
         'system': {'action': 'start'}
     })
@@ -195,7 +179,7 @@ def start():
 
 def stop():
     _page_out()
-    duration = (datetime.datetime.now() - lyrebird_start_time).total_seconds()
+    duration = (datetime.datetime.now() - application.sync_namespace.lyrebird_start_time).total_seconds()
     application.server['event'].publish('system', {
         'system': {
             'action': 'stop',

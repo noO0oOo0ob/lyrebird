@@ -110,7 +110,7 @@ class HandlerContext:
                 'data': origin_data
             }
 
-        context.application.cache.add(self.flow)
+        # context.application.cache.add(self.flow)
 
         logger.debug(f'[On client request] {self.flow["request"]["url"]}')
 
@@ -236,10 +236,11 @@ class HandlerContext:
                 else:
                     sleep_time = 0
                 for i in range(int(length/size) + 1):
-                    time.sleep(sleep_time)
-                    self.server_resp_time = time.time()
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
                     yield _resp_data[ i * size : (i+1) * size ]
             finally:
+                self.server_resp_time = time.time()
                 self.update_client_resp_time()
         return generator
 
@@ -255,10 +256,11 @@ class HandlerContext:
                 buffer = []
                 for item in upstream.response:
                     buffer.append(item)
-                    time.sleep(sleep_time)
-                    self.server_resp_time = time.time()
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
                     yield item
             finally:
+                self.server_resp_time = time.time()
                 self.response.data = b''.join(buffer)
                 DataHelper.origin2flow(self.response, output=self.flow['response'], chain=self.response_chain)
 
@@ -320,6 +322,8 @@ class HandlerContext:
             if self.is_proxiable:
                 self.update_response_headers_code2flow(output_key='proxy_response')
                 self.update_response_data2flow(output_key='proxy_response')
+        
+        context.application.cache.add(self.flow)
 
         # Import decoder for decoding the requested content
         decode_flow = {}

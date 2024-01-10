@@ -2,6 +2,7 @@ import pytest
 from lyrebird.event import EventServer
 from lyrebird import application
 from lyrebird.checker import LyrebirdCheckerServer
+from lyrebird.application import SyncManager
 
 CHECKER_A_FILENAME = "checker_a.py"
 CHECKER_B_FILENAME = "checker_b.py"
@@ -49,6 +50,7 @@ def checker_server(checker_init, tmp_path):
 
 @pytest.fixture
 def event_server():
+    application.sync_manager = SyncManager()
     server = EventServer()
     application.server['event'] = server
     yield server

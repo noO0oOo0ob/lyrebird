@@ -38,6 +38,7 @@ def index(path=''):
     if not req_context.response_source:
         flow_editor_handler.on_request_upstream_handler(req_context)
         proxy_handler.handle(req_context)
+
         if req_context.is_proxiable:
             req_context.set_response_source_proxy()
             req_context.update_response_headers_code2flow()

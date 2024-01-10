@@ -11,8 +11,10 @@ from packaging import version
 from lyrebird import log as nlog
 from lyrebird import application
 
+from lyrebird.utils import RedisDict, SharedMemoryDict
 from lyrebird.config.diff_mode import SettingDiffMode
 from lyrebird.config.checker_switch import SettingCheckerSwitch
+from lyrebird.compatibility import compat_redis
 
 from .keywords import *
 
@@ -41,81 +43,6 @@ personal_config_template = {
 }
 
 
-class RedisDict:
-        
-    def __init__(self, data={}, host='localhost', port=6379, db=0, param_uuid=None):
-        self.port = port
-        self.host = host
-        self.db = db
-        if not param_uuid:
-            self.uuid = str(uuid.uuid4())
-        else:
-            self.uuid = param_uuid
-        self.redis = redis.Redis(host=self.host, port=self.port, db=self.db)
-        for k in data.keys():
-            self[k] = data[k]
-
-    def __getitem__(self, key):
-        value = self.redis.hget(self.uuid, key)
-        if value is None:
-            raise KeyError(key)
-        return json.loads(value.decode())
-
-    def __setitem__(self, key, value):
-        self.redis.hset(self.uuid, key, json.dumps(value, ensure_ascii=False))
-
-    def __delitem__(self, key):
-        if not self.redis.hexists(self.uuid, key):
-            raise KeyError(key)
-        self.redis.hdel(self.uuid, key)
-
-    def __contains__(self, key):
-        return self.redis.hexists(self.uuid, key)
-
-    def keys(self):
-        return [key.decode() for key in self.redis.hkeys(self.uuid)]
-
-    def values(self):
-        return [json.loads(value.decode()) for value in self.redis.hgetall(self.uuid).values()]
-
-    def items(self):
-        return [(key.decode(), json.loads(value.decode())) for key, value in self.redis.hgetall(self.uuid).items()]
-
-    def get(self, key, default=None):
-        value = self.redis.hget(self.uuid, key)
-        if value is None:
-            return default
-        return json.loads(value.decode())
-
-    def update(self, data):
-        for key, value in data.items():
-            self[key] = value
-
-    def raw(self):
-        return {key.decode(): json.loads(value.decode()) for key, value in self.redis.hgetall(self.uuid).items()}
-
-    def __len__(self):
-        return len(self.redis.hkeys(self.uuid))
-
-    def __repr__(self):
-        return repr(dict(self.items()))
-    
-    def __getstate__(self):
-        return pickle.dumps({
-            'uuid':self.uuid,
-            'port':self.port,
-            'host':self.host,
-            'db':self.db
-            })
-
-    def __setstate__(self, state):
-        data = pickle.loads(state)
-        self.port = data['port']
-        self.host = data['host']
-        self.db = data['db']
-        self.uuid = data['uuid']
-        self.redis = redis.Redis(host=self.host, port=self.port, db=self.db)
-
 class ConfigManager():
     ROOT = Path('~/.lyrebird').expanduser()
     DEFAULT_FILENAME = 'conf.json'
@@ -125,8 +52,7 @@ class ConfigManager():
     FORBIDDEN_MODIFY_FIELDS_IN_CONFIG = set(['version', 'proxy.port', 'mock.port'])
 
     def __init__(self, conf_path_list=None, custom_conf=None):
-        # self.config = config_template    
-        self.config = RedisDict(data=config_template)
+        self.config = config_template    
         self.config_root = self.ROOT
         self.conf_file = self.BASE_CONFIG
         self.config_list = []
@@ -141,6 +67,12 @@ class ConfigManager():
                 self.update_conf_source(conf_path)
         if custom_conf:
             self.update_conf_custom(custom_conf)
+        
+        if self.config.get('redis_enable', False) and compat_redis():
+            self.config = RedisDict(data=self.config,
+                                    host=self.config.get('redis_host'),
+                                    port=self.config.get('redis_port'),
+                                    db=self.config.get('redis_db'))
 
         self.initialize_personal_config()
 

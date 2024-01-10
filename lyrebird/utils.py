@@ -3,13 +3,18 @@ import os
 import json
 import math
 import time
+import uuid
+import redis
+import pickle
 import socket
 import tarfile
 import requests
 import datetime
 import netifaces
 import traceback
+import hashlib
 from pathlib import Path
+from multiprocessing import shared_memory
 from jinja2 import Template, StrictUndefined
 from jinja2.exceptions import UndefinedError, TemplateSyntaxError
 from contextlib import closing
@@ -18,6 +23,8 @@ from lyrebird.log import get_logger
 from lyrebird.application import config
 
 logger = get_logger()
+
+REDIS_EXPIRE_TIME = 60*60*24
 
 
 def convert_size(size_bytes):
@@ -497,3 +504,533 @@ class JSONFormat:
             elif isinstance(prop_obj, datetime.datetime):
                 prop_collection[prop] = prop_obj.timestamp()
         return prop_collection
+
+
+class RedisManager:
+
+    redis_dicts = set()
+
+    @staticmethod
+    def put(obj):
+        RedisManager.redis_dicts.add(obj)
+
+    @staticmethod
+    def destory():
+        for i in RedisManager.redis_dicts:
+            i.destory()
+        RedisManager.redis_dicts.clear()
+
+    @staticmethod
+    def serialize():
+        return pickle.dumps(RedisManager.redis_dicts)
+
+    @staticmethod
+    def deserialize(data):
+        RedisManager.redis_dicts = pickle.loads(data)
+
+
+class RedisData:
+
+    host = 'localhost'
+    port = 6379
+    db = 0
+
+    def __init__(self, host=None, port=None, db=None, param_uuid=None):
+        if not host:
+            host = RedisData.host
+        if not port:
+            port = RedisData.port
+        if not db:
+            db = RedisData.db
+        self.port = port
+        self.host = host
+        self.db = db
+        if not param_uuid:
+            self.uuid = str(uuid.uuid4())
+        else:
+            self.uuid = param_uuid
+        self.redis = redis.Redis(host=self.host, port=self.port, db=self.db)
+        RedisManager.put(self)
+
+    def destory(self):
+        self.redis.delete(self.uuid)
+        self.redis.close()
+
+
+    def __getstate__(self):
+        return pickle.dumps({
+            'uuid':self.uuid,
+            'port':self.port,
+            'host':self.host,
+            'db':self.db
+            })
+
+    def __setstate__(self, state):
+        data = pickle.loads(state)
+        self.port = data['port']
+        self.host = data['host']
+        self.db = data['db']
+        self.uuid = data['uuid']
+        self.redis = redis.Redis(host=self.host, port=self.port, db=self.db)
+
+
+class RedisDict(RedisData):
+
+    def __init__(self, host=None, port=None, db=None, param_uuid=None, data={}):
+        super().__init__(host, port, db, param_uuid)
+        for k in data.keys():
+            self[k] = data[k]
+
+    def __getitem__(self, key):
+        value = self.redis.hget(self.uuid, key)
+        if value is None:
+            raise KeyError(key)
+        return json.loads(value.decode())
+
+    def __setitem__(self, key, value):
+        self.redis.hset(self.uuid, key, json.dumps(value, ensure_ascii=False))
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def __delitem__(self, key):
+        if not self.redis.hexists(self.uuid, key):
+            raise KeyError(key)
+        self.redis.hdel(self.uuid, key)
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def __contains__(self, key):
+        return self.redis.hexists(self.uuid, key)
+
+    def keys(self):
+        return [key.decode() for key in self.redis.hkeys(self.uuid)]
+
+    def values(self):
+        return [json.loads(value.decode()) for value in self.redis.hgetall(self.uuid).values()]
+
+    def items(self):
+        return [(key.decode(), json.loads(value.decode())) for key, value in self.redis.hgetall(self.uuid).items()]
+
+    def get(self, key, default=None):
+        value = self.redis.hget(self.uuid, key)
+        if value is None:
+            return default
+        return json.loads(value.decode())
+
+    def update(self, data):
+        for key, value in data.items():
+            self[key] = value
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+    
+    def clear(self):
+        self.redis.delete(self.uuid)
+
+    def raw(self):
+        return {key.decode(): json.loads(value.decode()) for key, value in self.redis.hgetall(self.uuid).items()}
+
+    def __len__(self):
+        return len(self.redis.hkeys(self.uuid))
+
+    def __repr__(self):
+        return repr(dict(self.items()))
+
+
+class RedisList(RedisData):
+
+    def __init__(self, host=None, port=None, db=None, param_uuid=None, data=[]):
+        super().__init__(host, port, db, param_uuid)
+        for item in data:
+            self.append(item)
+
+    def __getitem__(self, index):
+        value = self.redis.lindex(self.uuid, index)
+        if value is None:
+            raise IndexError("list index out of range")
+        return json.loads(value.decode())
+
+    def __setitem__(self, index, value):
+        self.redis.lset(self.uuid, index, json.dumps(value, ensure_ascii=False))
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def __delitem__(self, index):
+        self.redis.lset(self.uuid, index, '__DELETED__')
+        self.redis.lrem(self.uuid, 1, '__DELETED__')
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def __contains__(self, value):
+        return self.redis.lrange(self.uuid, 0, -1).__contains__(json.dumps(value, ensure_ascii=False))
+
+    def __len__(self):
+        return self.redis.llen(self.uuid)
+
+    def __repr__(self):
+        return repr(self.redis.lrange(self.uuid, 0, -1))
+
+    def append(self, value):
+        self.redis.rpush(self.uuid, json.dumps(value, ensure_ascii=False))
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def extend(self, values):
+        pipe = self.redis.pipeline()
+        for value in values:
+            pipe.rpush(self.uuid, json.dumps(value, ensure_ascii=False))
+        pipe.execute()
+
+    def insert(self, index, value):
+        self.redis.linsert(self.uuid, 'BEFORE', json.dumps(self[index], ensure_ascii=False), json.dumps(value, ensure_ascii=False))
+
+    def remove(self, value):
+        self.redis.lrem(self.uuid, 1, json.dumps(value, ensure_ascii=False))
+
+    def pop(self, index=-1):
+        value = self[index]
+        del self[index]
+        return value
+
+    def index(self, value, start=None, end=None):
+        values = self.redis.lrange(self.uuid, start, end)
+        try:
+            return values.index(json.dumps(value, ensure_ascii=False))
+        except ValueError:
+            raise ValueError("list.index(x): x not in list")
+
+    def count(self, value):
+        return self.redis.lrange(self.uuid, 0, -1).count(json.dumps(value, ensure_ascii=False))
+
+    def clear(self):
+        self.redis.delete(self.uuid)
+    
+    def raw(self):
+        return [json.loads(i) for i in self.redis.lrange(self.uuid, 0, -1)]
+
+
+class RedisSet:
+
+    def __init__(self, host=None, port=None, db=None, param_uuid=None, data=set()):
+        super().__init__(host, port, db, param_uuid)
+        for item in data:
+            self.add(item)
+
+    def add(self, item):
+        self.redis.sadd(self.uuid, json.dumps(item, ensure_ascii=False))
+
+    def remove(self, item):
+        self.redis.srem(self.uuid, json.dumps(item, ensure_ascii=False))
+
+    def contains(self, item):
+        return self.redis.sismember(self.uuid, json.dumps(item, ensure_ascii=False))
+
+    def clear(self):
+        self.redis.delete(self.uuid)
+
+    def destroy(self):
+        self.redis.delete(self.uuid)
+        self.redis.close()
+
+    def __len__(self):
+        return self.redis.scard(self.uuid)
+
+    def __repr__(self):
+        return repr(self.redis.smembers(self.uuid))
+
+    def __iter__(self):
+        return iter(self.redis.smembers(self.uuid))
+
+
+class RedisSortedSet(RedisData):
+
+    def __init__(self, host=None, port=None, db=None, param_uuid=None, data=None):
+        super().__init__(host, port, db, param_uuid)
+        if data:
+            for item, score in data.items():
+                self.add(item, score)
+
+    def add(self, item, score):
+        self.redis.zadd(self.uuid, {json.dumps(item, ensure_ascii=False): score})
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def remove(self, item):
+        self.redis.zrem(self.uuid, json.dumps(item, ensure_ascii=False))
+        self.redis.expire(self.uuid, REDIS_EXPIRE_TIME)
+
+    def get_score(self, item):
+        return self.redis.zscore(self.uuid, json.dumps(item, ensure_ascii=False))
+
+    def get_rank(self, item):
+        return self.redis.zrank(self.uuid, json.dumps(item, ensure_ascii=False))
+
+    def get_items(self, start=0, end=-1, desc=False):
+        items = self.redis.zrange(self.uuid, start, end, desc=desc, withscores=True)
+        return {json.loads(item.decode()): score for item, score in items}
+
+    def __contains__(self, item):
+        return self.get_score(item) is not None
+
+    def __len__(self):
+        return self.redis.zcard(self.uuid)
+
+    def __repr__(self):
+        return repr(self.get_items())
+
+
+class SharedMemoryManager():
+
+    objs = []
+
+    @staticmethod
+    def add(obj):
+        SharedMemoryManager.objs.append(obj)
+
+    @staticmethod
+    def destory():
+        for obj in SharedMemoryManager.objs:
+            obj.destory()
+    
+    @staticmethod
+    def serialize():
+        return pickle.dumps(SharedMemoryManager.objs)
+
+    @staticmethod
+    def deserialize(data):
+        SharedMemoryManager.objs = pickle.loads(data)
+
+
+# class SharedMemoryDict():
+
+#     def __init__(self, name=None, max=20000, data={}):
+#         if not name:
+#             name = str(uuid.uuid1())[1:6]
+#         self.max_size = max
+#         self.name = name
+#         self.data = data
+#         self.shm = shared_memory.SharedMemory(name=name, create=True, size=self.max_size)
+#         self.shm_hash = shared_memory.SharedMemory(name=name+"_hash", create=True, size=32)
+#         self.lock = shared_memory.SharedMemory(name=name+"_bool", create=True, size=1)
+#         self.lock.buf[:1] = b'1'
+#         self.md5 = ''
+#         self.using = True
+#         SharedMemoryManager.add(self)
+#         self.write_data(self.data)
+    
+#     def write_data(self, data:dict={}):
+#         if not data:
+#             return
+#         while self.using and not int(self.lock.buf[:1]):
+#             continue
+#         self.data = data
+#         self.lock.buf[:1] = b'0'
+#         json_str = json.dumps(data).encode('utf-8')
+#         s = json_str.ljust(self.max_size, b'\x00')
+#         self.md5 = hashlib.md5(json_str).hexdigest()
+#         self.shm.buf[:len(s)] = s
+#         self.shm_hash.buf[:len(self.md5)] = self.md5.encode()
+        
+#         self.lock.buf[:1] = b'1'
+
+#     def read_data(self):
+#         while self.using and not int(self.lock.buf[:1]):
+#             continue
+
+#         try:
+#             s_hash = self.shm_hash.buf.tobytes().decode('utf-8')
+#         except Exception:
+#             print("error1")
+#         if s_hash == self.md5:
+#             return self.data
+        
+#         while self.using and not int(self.lock.buf[:1]):
+#             continue
+        
+#         try:
+#             s = self.shm.buf.tobytes().rstrip(b'\x00').decode('utf-8')
+#         except Exception:
+#             print('error2')
+#         data = json.loads(s)
+#         self.data = data
+#         return data
+
+#     def destory(self):
+#         self.using = False
+#         while not int(self.lock.buf[:1]):
+#             continue
+#         self.shm.unlink()
+#         self.shm_hash.unlink()
+#         self.lock.unlink()
+
+#     def __getitem__(self, key):
+#         data = self.read_data()
+#         if key not in data:
+#             raise KeyError(key)
+#         return data.get(key)
+
+#     def __setitem__(self, key, value):
+#         data = self.read_data()
+#         data[key] = value
+#         self.write_data(data)
+
+#     def __delitem__(self, key):
+#         data = self.read_data()
+#         if key not in data:
+#             raise KeyError(key)
+#         del data[key]
+#         self.write_data(data)
+    
+#     def __contains__(self, key):
+#         return key in self.read_data()
+
+#     def keys(self):
+#         return self.read_data().keys()
+
+#     def values(self):
+#         return self.read_data().values()
+
+#     def items(self):
+#         return self.read_data().items()
+    
+#     def get(self, key, default=None):
+#         data = self.read_data()
+#         if key not in data:
+#             return default
+#         return data.get(key)
+
+#     def update(self, data):
+#         data = self.read_data()
+#         for key, value in data.items():
+#             self[key] = value
+#         self.write_data(data)
+    
+#     def raw(self):
+#         return self.read_data()
+
+#     def __len__(self):
+#         return len(self.read_data())
+
+#     def __repr__(self):
+#         return repr(self.read_data())
+    
+#     def __getstate__(self):
+#         return pickle.dumps({
+#             'name':self.name,
+#             'max':self.max_size
+#             })
+
+#     def __setstate__(self, state):
+#         data = pickle.loads(state)
+#         self.name = data['name']
+#         self.max_size = data['max']
+#         self.shm = shared_memory.SharedMemory(name=self.name)
+#         self.shm_hash = shared_memory.SharedMemory(name=self.name+"_hash")
+#         self.lock = shared_memory.SharedMemory(name=self.name+"_bool")
+#         self.md5 = ''
+#         self.using = True
+#         self.data = self.read_data()
+
+class SharedMemoryDict():
+
+    def __init__(self, name=None, max=20000, data={}):
+        if not name:
+            name = str(uuid.uuid1())[1:6]
+        self.max_size = max
+        self.name = name
+        self.data = data
+        self.shm = shared_memory.SharedMemory(name=name, create=True, size=self.max_size)
+        self.shm_hash = shared_memory.SharedMemory(name=name+"_hash", create=True, size=32)
+        self.md5 = ''
+        self.using = True
+        SharedMemoryManager.add(self)
+        self.write_data(self.data)
+    
+    def write_data(self, data:dict={}):
+        if not data:
+            return
+        self.data = data
+        json_str = json.dumps(data).encode('utf-8')
+        s = json_str.ljust(self.max_size, b'\x00')
+        self.md5 = hashlib.md5(json_str).hexdigest()
+        self.shm.buf[:len(s)] = s
+        self.shm_hash.buf[:len(self.md5)] = self.md5.encode()
+
+    def read_data(self):
+        try:
+            s_hash = self.shm_hash.buf.tobytes().decode('utf-8')
+        except Exception:
+            print("error1")
+        if s_hash == self.md5:
+            return self.data
+        try:
+            s = self.shm.buf.tobytes().rstrip(b'\x00').decode('utf-8')
+        except Exception:
+            print('error2')
+        data = json.loads(s)
+        self.data = data
+        return data
+
+    def destory(self):
+        self.using = False
+        self.shm.unlink()
+        self.shm_hash.unlink()
+
+    def __getitem__(self, key):
+        data = self.read_data()
+        if key not in data:
+            raise KeyError(key)
+        return data.get(key)
+
+    def __setitem__(self, key, value):
+        data = self.read_data()
+        data[key] = value
+        self.write_data(data)
+
+    def __delitem__(self, key):
+        data = self.read_data()
+        if key not in data:
+            raise KeyError(key)
+        del data[key]
+        self.write_data(data)
+    
+    def __contains__(self, key):
+        return key in self.read_data()
+
+    def keys(self):
+        return self.read_data().keys()
+
+    def values(self):
+        return self.read_data().values()
+
+    def items(self):
+        return self.read_data().items()
+    
+    def get(self, key, default=None):
+        data = self.read_data()
+        if key not in data:
+            return default
+        return data.get(key)
+
+    def update(self, data):
+        data = self.read_data()
+        for key, value in data.items():
+            self[key] = value
+        self.write_data(data)
+    
+    def raw(self):
+        return self.read_data()
+
+    def __len__(self):
+        return len(self.read_data())
+
+    def __repr__(self):
+        return repr(self.read_data())
+    
+    def __getstate__(self):
+        return pickle.dumps({
+            'name':self.name,
+            'max':self.max_size
+            })
+
+    def __setstate__(self, state):
+        data = pickle.loads(state)
+        self.name = data['name']
+        self.max_size = data['max']
+        self.shm = shared_memory.SharedMemory(name=self.name)
+        self.shm_hash = shared_memory.SharedMemory(name=self.name+"_hash")
+        self.md5 = ''
+        self.using = True
+        self.data = self.read_data()

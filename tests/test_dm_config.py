@@ -90,6 +90,7 @@ def root(tmpdir):
 @pytest.fixture
 def data_manager(root, tmpdir):
     application._cm = ConfigManager()
+    lyrebird.mock.context.application = lyrebird.mock.context.Application()
     lyrebird.mock.context.application.socket_io = FakeSocketio()
     application.encoders_decoders = EncoderDecoder()
     _dm = dm.DataManager()
@@ -110,7 +111,7 @@ CONTENT = u"from lyrebird import event\n@event('flow')\ndef test_func():\n\tpass
 @pytest.fixture
 def checker_init(tmp_path, tmpdir):
     config = {
-        'checker.workspace': tmp_path,
+        'checker.workspace': str(tmp_path),
         'checker.switch': {
             CHECKER_A_FILENAME: CHECKER_A_SWITCH,
             CHECKER_B_FILENAME: CHECKER_B_SWITCH
@@ -121,7 +122,7 @@ def checker_init(tmp_path, tmpdir):
     checker_a_file.write_text(CONTENT)
     checker_b_file = tmp_path / CHECKER_B_FILENAME
     checker_b_file.write_text(CONTENT)
-
+    print(config)
     application._cm.config.update(config)
 
     return application.checkers
@@ -138,6 +139,7 @@ def checker_server(checker_init, tmp_path):
 
 @pytest.fixture
 def event_server():
+    application.sync_manager = application.SyncManager()
     server = EventServer()
     application.server['event'] = server
     yield server

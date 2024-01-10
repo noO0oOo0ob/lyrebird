@@ -1,12 +1,14 @@
 import logging
+import colorama
 from lyrebird import application
 from .base_server import ProcessServer
-from multiprocessing import Lock
+from multiprocessing import Lock, Queue
 from logging.handlers import TimedRotatingFileHandler
 from colorama import Fore, Style, Back
 from collections import namedtuple
 from pathlib import Path
 import os
+colorama.init()
 
 DEFAULT_LOG_PATH = '~/.lyrebird/lyrebird.log'
 LOGGER_INITED = False
@@ -107,8 +109,10 @@ class LogServer(ProcessServer):
 
     def __init__(self):
         super().__init__()
-        self.queue = application.sync_manager.Queue()
-        self.log_process_lock = Lock()
+        # self.queue = Queue()
+        # self.queue = application.sync_manager.get_queue()
+        self.queue = application.sync_manager.get_multiprocessing_queue()
+        self.log_process_lock = application.sync_manager.get_lock()
     
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
@@ -118,6 +122,9 @@ class LogServer(ProcessServer):
     def run(self, msg_queue, config, log_queue, *args, **kwargs):
         if not self.log_process_lock.acquire(timeout=10):
             return
+        
+        import signal
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         
         logging.addLevelName(60, 'NOTICE')
 
@@ -147,11 +154,17 @@ class LogServer(ProcessServer):
         while True:
             try:
                 log = log_queue.get()
+                if not log:
+                    break
                 logger = logging.getLogger(log.name)
                 logger.handle(log)
             except KeyboardInterrupt:
                 self.log_process_lock.release()
-                break        
+                break
+    
+    def stop(self):
+        super().stop()
+        self.log_process_lock = None
 
 
 def get_logger():

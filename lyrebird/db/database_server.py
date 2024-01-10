@@ -3,7 +3,8 @@ import math
 import datetime
 import traceback
 import time
-from queue import Queue
+# from queue import Queue
+from multiprocessing import Queue
 from pathlib import Path
 from lyrebird import application
 from lyrebird import log
@@ -58,7 +59,7 @@ class LyrebirdDatabaseServer(ThreadServer):
             logger.warning("Restarting will delete the broken database by default, historical events in inspector-pro will be lost, please be careful.")
 
         # init queue
-        self.storage_queue = Queue()
+        self.storage_queue = application.sync_manager.get_multiprocessing_queue()
 
         # subscribe all channel
         application.server['event'].subscribe({
@@ -156,13 +157,15 @@ class LyrebirdDatabaseServer(ThreadServer):
         while self.running:
             try:
                 event = self.storage_queue.get()
-                session.add(event)
-                session.commit()
-                context.emit('db_action', 'add event log')
-            except OperationalError:
-                logger.error(f'Save event failed. {traceback.format_exc()}')
-                logger.warning(f'DB would be reset: {self.database_uri}')
-                self.reset()
+                if not event:
+                    break
+            #     session.add(event)
+            #     session.commit()
+            #     context.emit('db_action', 'add event log')
+            # except OperationalError:
+            #     logger.error(f'Save event failed. {traceback.format_exc()}')
+            #     logger.warning(f'DB would be reset: {self.database_uri}')
+            #     self.reset()
             except Exception:
                 logger.error(f'Save event failed. {traceback.format_exc()}')
 
@@ -246,12 +249,14 @@ class LyrebirdDatabaseServer(ThreadServer):
         return database_info
 
     def reset(self):
+        self.running = False
+        self.storage_queue.put(None)
         self.stop()
         self.database_uri.unlink()
         self.init_engine()
         if not self.server_thread.is_alive():
             self.start()
-        self.running = True
+        self.running = True        
 
 
 class Event(Base, JSONFormat):

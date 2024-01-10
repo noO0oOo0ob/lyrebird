@@ -137,7 +137,7 @@ We need to limit render time
 EMIT_INTERVAL = 0.3
 last_emit_time = {}
 
-application = Application()
+application = None
 
 def make_ok_response(**kwargs):
     ok_resp = {

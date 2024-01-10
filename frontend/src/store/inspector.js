@@ -60,6 +60,7 @@ export default {
       state.focusedFlowDetail = null
     },
     setOriginFlowList (state, originFlowList) {
+      originFlowList.sort((a, b) => b.start_time - a.start_time);
       state.originFlowList = originFlowList
     },
     setRecordMode (state, recordMode) {
