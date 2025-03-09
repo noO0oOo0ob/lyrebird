@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录页面</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            width: 350px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .error-message {
+            color: red;
+            margin-top: 20px;
+            text-align: center;
+            display: none;
+        }
+        .success-message {
+            color: green;
+            margin-top: 20px;
+            text-align: center;
+            display: none;
+        }
+        .log-container {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>用户登录</h1>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            <button type="submit" id="loginButton">登录</button>
+            <div id="errorMessage" class="error-message">用户名或密码错误</div>
+            <div id="successMessage" class="success-message">登录成功！</div>
+        </form>
+        <div class="log-container" id="logContainer">
+            <div class="log-entry">日志记录：</div>
+        </div>
+    </div>
+
+    <script>
+        // 添加日志函数
+        function log(message) {
+            const logContainer = document.getElementById('logContainer');
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logContainer.appendChild(logEntry);
+            console.log(message);
+        }
+
+        document.getElementById('loginForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            log(`尝试登录，用户名: ${username}`);
+            
+            // 模拟登录验证
+            if (username === 'admin' && password === 'password') {
+                // 登录成功
+                document.getElementById('errorMessage').style.display = 'none';
+                document.getElementById('successMessage').style.display = 'block';
+                log('登录成功！');
+                // 这里可以重定向到其他页面
+                // window.location.href = 'dashboard.html';
+            } else {
+                // 登录失败
+                document.getElementById('errorMessage').style.display = 'block';
+                document.getElementById('successMessage').style.display = 'none';
+                log('登录失败：用户名或密码错误');
+            }
+        });
+
+        // 自动填写并提交表单的函数
+        function autoFillAndSubmit() {
+            log('开始自动填写表单');
+            
+            // 填写用户名和密码
+            const usernameInput = document.getElementById('username');
+            const passwordInput = document.getElementById('password');
+            
+            usernameInput.value = 'admin';
+            log('已填写用户名: admin');
+            
+            passwordInput.value = 'password';
+            log('已填写密码');
+            
+            // 提交表单
+            setTimeout(() => {
+                log('准备提交表单');
+                document.getElementById('loginButton').click();
+                log('表单已提交');
+            }, 1000);
+        }
+
+        // 页面加载完成后自动执行
+        window.onload = function() {
+            log('页面已加载完成');
+            // 延迟执行自动填写和提交
+            setTimeout(autoFillAndSubmit, 1500);
+        };
+    </script>
+</body>
+</html> 
